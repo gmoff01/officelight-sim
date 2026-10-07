@@ -343,7 +343,6 @@
           <canvas class="layer" id="wxc" width="1200" height="1200" aria-hidden="true"></canvas>
           <canvas class="layer" id="prc" width="1200" height="1200" aria-hidden="true"></canvas>
           <canvas class="layer" id="pri" width="1200" height="1200" aria-hidden="true"></canvas>
-          <div class="stale" id="stale"></div>
           <div class="hit" id="cardhit"></div>
           <div class="net" id="net" aria-live="polite">
             <div class="nt" id="nett"></div><div class="nd" id="netd"></div>
@@ -600,9 +599,10 @@
       <span class="k">Honesty</span>
       <h3>A dead feed is not an empty day</h3>
       <p>Both pollers record their last success. After five missed calendar polls or a
-      forty&#8209;minute weather gap an amber line appears under the strip &mdash; because
-      &ldquo;Schedule clear&rdquo; and &ldquo;the network is down&rdquo; look identical
-      otherwise, and one of them is a lie.</p>
+      forty&#8209;minute weather gap, the town's name on the weather line gives way to an
+      amber notice &mdash; CAL 25 MIN OLD, WX 45 MIN OLD &mdash; and an empty day with the
+      calendar down says <em>Calendar not updating</em> rather than &ldquo;Schedule clear&rdquo;,
+      which would be a lie. The face's debug page has a STALE row to show it.</p>
     </article>
   </div>
 </section>
@@ -4256,7 +4256,7 @@ W19.LAYOUTS.B.pick = (y, st) => y > 272 ? KEY[wx.tab] : null;
 /* the scenario: tonight's real readings, or smoke, or one of two alerts */
 const sc = {name: "today", sun: "markers"};
 /* every fake, at its real value */
-const REAL = {alert: "off", day: "real", net: "real", health: "real", prompt: "off",
+const REAL = {alert: "off", day: "real", net: "real", stale: "real", health: "real", prompt: "off",
               fc: "live", walert: "none", air: "real", printer: "live", batt: "real", radio: "real", bg: "rotation"};
 const dbg = Object.assign({}, REAL);
 const AIR = () => dbg.air === "smoky" ? AQI_SMOKY : AQI_CAPTURED;
@@ -4673,7 +4673,8 @@ const DEBUG_PAGES = {
     ["MEETING ALERT", "alert", [["off", "OFF", 0], ["yellow", "YELLOW", 0], ["red", "RED", 0]]],
     ["DAY", "day", [["real", "REAL", 0], ["empty", "EMPTY", 0], ["meeting", "MEETING", 0], ["busy", "BUSY", 1]]],
     ["NETWORK", "net", [["real", "REAL", 0], ["offline", "OFFLINE", 0], ["refused", "REFUSED", 0]]],
-    ["HEALTH", "health", [["real", "REAL", 3], ["problems", "PROBLEMS", 3]]],
+    /* a feed not updating, which takes the weather line's place label (round 27) */
+    ["STALE", "stale", [["real", "REAL", 0], ["cal", "CALENDAR", 0], ["calnone", "NEVER", 0], ["wx", "WEATHER", 0]]],
     ["DISMISS PROMPT", null, [["prompt", "SHOW", 0]]]]],
   "-2": ["DEBUG · THE FEEDS", [
     ["FORECAST", "fc", [["live", "LIVE", 2], ["icons", "EVERY ICON", 2], ["wet", "WET WEEK", 2]]],
@@ -4681,7 +4682,8 @@ const DEBUG_PAGES = {
     ["AIR", "air", [["real", "REAL", 2], ["smoky", "SMOKY", 2]]],
     ["PRINTER", "printer", [["live", "LIVE", 0], ["printing", "PRINTING", 0], ["heating", "HEATING", 0], ["soon", "COLOR SOON", 0]]],
     [null, "printer", [["change", "CHANGE", 0], ["attention", "ATTENTION", 0], ["error", "ERROR", 0], ["finished", "DONE", 0]]]]],
-  "-3": ["DEBUG · THE LIGHT", [
+  "-3": ["DEBUG · HEALTH", [
+    ["HEALTH", "health", [["real", "REAL", 3], ["problems", "PROBLEMS", 3]]],
     ["BATTERY", "batt", [["real", "REAL", 3], ["charging", "CHARGING", 3], ["full", "FULL", 3]]],
     [null, "batt", [["60", "60%", 0], ["22", "22%", 0], ["8", "8%", 0]]],
     ["RADIO", "radio", [["real", "REAL", 3], ["weak", "WEAK", 3], ["lost", "LOST", 3]]]]],
@@ -4918,14 +4920,25 @@ function inHours(){
   const d = simDate(), h = d.getHours() + d.getMinutes() / 60;
   return d.getDay() >= 1 && d.getDay() <= 5 && h >= 8 && h < 18;
 }
+/* the feeds as shown (round 27, as the panel's shown_feed_health): stale only
+   past the panel's thresholds, or the STALE fake - the calendar 25 minutes old
+   or never reached, the weather 45 minutes old. null is fine. */
+function feedState(){
+  let cal = health.calDead && health.calAge > CALENDAR_STALE_AFTER ? health.calAge : null;
+  let wx = health.wxDead && health.wxAge > WEATHER_STALE_AFTER ? health.wxAge : null;
+  if (dbg.stale === "cal") cal = 25 * 60;
+  else if (dbg.stale === "calnone") cal = "never";
+  else if (dbg.stale === "wx") wx = 45 * 60;
+  return {cal, wx};
+}
 function systemNow(){
   const base = HEALTH[dbg.health === "problems" ? "problems" : "ok"];
   const pst = window.PRV ? PRV.state().split(/[ ,]/)[0].toUpperCase() : null;
   return Object.assign({}, base, {
     light: {answering: !radio.lost && lightListening(), mode: MODE_NAME[radio.lastConfirmed]},
     remote: null, online: net.online,
-    calendar: {age: health.calAge || 60, ok: !health.calDead},
-    weather: {age: health.wxAge || 300, ok: !health.wxDead},
+    calendar: (f => ({age: f.cal === "never" ? null : f.cal || 60, ok: f.cal === null}))(feedState()),
+    weather: (f => ({age: f.wx || 300, ok: f.wx === null}))(feedState()),
     printer: {state: pst, age: 9}});
 }
 
@@ -5086,7 +5099,7 @@ function tick(dt, t, o){
   wg.setTransform(1, 0, 0, 1, 0, 0);
   return q;
 }
-const NAMES = {"-4": "debug: background", "-3": "debug: the light", "-2": "debug: feeds", "-1": "debug: face", 0: "face", 1: "agenda",
+const NAMES = {"-4": "debug: background", "-3": "debug: health", "-2": "debug: feeds", "-1": "debug: face", 0: "face", 1: "agenda",
                2: "weather", 3: "health"};
 const state = () => (st.drag && !st.drag.band ? "dragging" : !settled() ? "sliding" : NAMES[page()]) +
   (page() === P_WEATHER ? " · " + ["24 hours", "10 days", "air"][wx.tab] : "");
@@ -5097,7 +5110,7 @@ const live = {
   air(d){ Object.assign(AQI_CAPTURED, d); },
   alert(a){ LIVE_ALERT = a; },
 };
-window.PGV = {live, down, move, up, pageTap, faceTap, tick, visible, settled, state, faked, stripText, dateTap,
+window.PGV = {live, down, move, up, pageTap, faceTap, tick, visible, settled, state, faked, stripText, dateTap, feedState,
               automationOff, close: () => slideTo(0), slideTo, cardNow: c => busyDay ? busyCard(simNow()) : dayCard || c, faceOnly, AGENDA: P_AGENDA, WEATHER: P_WEATHER,
               locked: () => locked, closeCamera: () => closeCam, radioLost: () => dbg.radio === "lost", mix, ease, CLOCK_BOX: {x0: 270, x1: 530, y0: 66, y1: 166},
               inClock: (x, y) => inZone(ZONE_CLOCK, x, y)};
@@ -5416,6 +5429,9 @@ scenario("printing");
    the loop
    ════════════════════════════════════════════════════════════════════ */
 let lastStale = 0;
+/* the weather line's place label, and what it shows when a feed is not
+   updating (round 27, C); the public copy sets placeName to the visitor's */
+let placeName = $("place").textContent, calendarDown = false;
 function frame(){
   const dt = tickClock(), now = simNow();
 
@@ -5464,7 +5480,8 @@ function frame(){
   if (!sc.has){
     nextEl.classList.add("empty");
     $("cd").textContent = "T-——:——";
-    $("sum").textContent = "Schedule clear";
+    /* an empty day with the calendar down claims nothing (round 27) */
+    $("sum").textContent = calendarDown ? "Calendar not updating" : "Schedule clear";
   } else {
     nextEl.classList.remove("empty");
     $("cd").textContent = fmtCountdown(sc.start === null ? null : (sc.start - now) / 60);
@@ -5535,16 +5552,22 @@ function frame(){
   health.wxAge = health.wxDead ? health.wxAge + dt * speed : 0;
   if (now - lastStale > 0.3){
     lastStale = now;
-    const lines = [];
-    if (health.calAge > CALENDAR_STALE_AFTER)
-      lines.push("CALENDAR " + Math.floor(health.calAge / 60) + "M STALE");
-    if (health.wxAge > WEATHER_STALE_AFTER)
-      lines.push("WEATHER " + Math.floor(health.wxAge / 60) + "M STALE");
-    if (health.calDead && !lines.length) lines.push("CALENDAR UNREACHABLE");
-    /* the badge already says the network is down, and the lines sit where a
-       two-line title runs, so they give way to it */
-    if (netLast) lines.length = 0;
-    $("stale").innerHTML = lines.map(l => "<span>" + l + "</span>").join("");
+    /* a feed not updating takes the weather line's place label, as the
+       panel's feed_notice: CAL 25 MIN OLD, WX 45 MIN OLD, CAL NOT REACHED, or
+       CAL + WX OLD - online, since offline the badge already says it */
+    const f = PGV.feedState();
+    const short = a => a < 3600 ? Math.floor(a / 60) + " MIN" : Math.floor(a / 3600) + " HR";
+    let notice = null;
+    if (f.cal !== null && f.wx !== null) notice = "CAL + WX OLD";
+    else if (f.cal !== null || f.wx !== null){
+      const [n, a] = f.cal !== null ? ["CAL", f.cal] : ["WX", f.wx];
+      notice = n + (a === "never" ? " NOT REACHED" : " " + short(a) + " OLD");
+    }
+    if (netLast) notice = null;
+    const pl = $("place");
+    pl.textContent = notice || placeName;
+    pl.style.color = notice ? "var(--amber)" : "";
+    calendarDown = f.cal !== null;
   }
 
   /* the background */
@@ -5605,7 +5628,7 @@ requestAnimationFrame(frame);
       if (liveIdx === null){ WEATHER.push(entry); liveIdx = WEATHER.length - 1; }
       else WEATHER[liveIdx] = entry;
       wxIdx = liveIdx;
-      $("place").textContent = name;
+      placeName = name;       /* the weather line's notice gives way back to it */
       say("Weather: live for " + (place || "your location") + " (" + how + "), from open-meteo.");
     }).catch(() => say("Weather: sample data - the forecast could not be fetched."));
     get(at(AQ, lat, lon, 3)).then(PGV.live.air).catch(() => {});
