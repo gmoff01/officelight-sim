@@ -819,7 +819,7 @@ const GRACE_MINUTES = 10.0;
 const STATUS_POLL_SECONDS = 1.0, CARD_REFRESH_SECONDS = 15.0;
 const CALENDAR_STALE_AFTER = 600, WEATHER_STALE_AFTER = 2400;
 const GREEBLE_OPACITY = {sky:0.34, board:0.24, life:0.34, topo:0.28, clusters:0.23,
-                         moon:0.62, dawn:0.55, snake:0.52};
+                         moon:0.62, dawn:0.55, snake:0.52, spiro:0.28};
 const ROTATE_FADE = 2.0, ROTATE_HOLD = 0.5;
 const smooth = p => { p = clamp01(p); return p * p * (3 - 2 * p); };
 /* real seconds, for interface animation: the confirmation, the card's fade,
@@ -876,8 +876,13 @@ function simMode(){
 let lightPowered = true, lightListenAt = 0;
 const LIGHT_BOOT_MS = 1500;
 const lightListening = () => lightPowered && hwMs() >= lightListenAt;
+/* the debug pages' WATCHDOG TEST (2026-10-08): the light's loop freezes -
+   it answers nothing and its LEDs hold - and its watchdog restarts it 8 s on,
+   in the mode it had, as the sketch's kept mode does */
+let lightFrozenUntil = 0;
+window.simWatchdogTest = () => { lightFrozenUntil = hwMs() + 8000; };
 function simPacket(cmd, ms){            /* returns the ack the sender receives, or null */
-  if (!lightListening()) return null;
+  if (!lightListening() || hwMs() < lightFrozenUntil) return null;
   const ack = sim.stagedAck;
   lastAckPower = sim.stagedPower;
   if (!(cmd >= 0 && cmd <= CMD_PARTY) && cmd !== CMD_QUERY){
@@ -3061,12 +3066,15 @@ registerFace({
    rather than a crossfade: the styles are nowhere near equal in
    brightness, so showing both at half reads as a state of its own.
    ════════════════════════════════════════════════════════════════════ */
-/* As on the panel: no two space faces (sky, moon, dawn) back to back,
-   clusters never beside life, snake beside neither grid face. It wraps. */
-const STYLES = ["sky", "snake", "moon", "life", "topo", "dawn", "board", "clusters"];
+/* The set, shown in a shuffled order as on the panel (2026-10-08): every
+   style once in a random order, then a fresh shuffle, never the same style
+   twice across the seam. The adjacency rules went with the fixed order. */
+const STYLES = ["sky", "snake", "moon", "life", "topo", "dawn", "board", "clusters", "spiro"];
 const STYLE_LABEL = {sky:"Sky · Arc", board:"Brd · Dense", life:"Life · Trails", topo:"Topo · Survey",
-                     clusters:"Defrag · Clusters", moon:"Moon · Crescent", dawn:"Dawn · Line", snake:"Snake · Bars"};
-const FACE_OF = {moon:"crescent-ice", dawn:"dawn-line", snake:"colony-bars"};
+                     clusters:"Defrag · Clusters", moon:"Moon · Crescent", dawn:"Dawn · Line", snake:"Snake · Bars",
+                     spiro:"Spiro · Two Pens"};
+/* the spirograph is round 28's settled face: Two Pens, Ripple, aura at x4 */
+const FACE_OF = {moon:"crescent-ice", dawn:"dawn-line", snake:"colony-bars", spiro:"pens-ripple-aura"};
 let seedCounter = 20260921;
 function buildStyle(name){
   seedCounter = (seedCounter + 0x9E3779B1) >>> 0;
@@ -3079,13 +3087,22 @@ function buildStyle(name){
   return {name, seed, L: makeLife(seed), t0: artClock};
 }
 let styleIdx = 0;
-let current = buildStyle(STYLES[0]);
+let bag = [], current = null;
+function nextStyle(){
+  if (!bag.length){
+    bag = STYLES.slice();
+    for (let i = bag.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; }
+    if (current && bag[0] === current.name) [bag[0], bag[1]] = [bag[1], bag[0]];
+  }
+  return bag.shift();
+}
+current = buildStyle(nextStyle());
 let handover = null;                    /* {phase, until, next} */
 let drawnCount = 0;
 
 function requestRotate(toName){
   if (handover) return;
-  const name = toName || STYLES[(STYLES.indexOf(current.name) + 1) % STYLES.length];
+  const name = toName || nextStyle();
   handover = {phase:"out", t0:artClock, name};
 }
 function tickRotator(now, alerting){
@@ -4692,15 +4709,19 @@ const DEBUG_PAGES = {
     ["HEALTH", "health", [["real", "REAL", 3], ["problems", "PROBLEMS", 3]]],
     ["BATTERY", "batt", [["real", "REAL", 3], ["charging", "CHARGING", 3], ["full", "FULL", 3]]],
     [null, "batt", [["60", "60%", 0], ["14", "14%", 0], ["8", "8%", 0]]],
-    ["RADIO", "radio", [["real", "REAL", 3], ["weak", "WEAK", 3], ["lost", "LOST", 3]]]]],
+    ["RADIO", "radio", [["real", "REAL", 3], ["weak", "WEAK", 3], ["lost", "LOST", 3]]],
+    /* the light freezes on purpose; its watchdog restarts it in its mode (2026-10-08) */
+    ["WATCHDOG", null, [["wdtest", "TEST", 3]]]]],
   "-4": ["DEBUG · THE BACKGROUND", null],
 };
 const ROW_Y0 = 290, ROW_PITCH = 66, PILL_H = 34, PILL_GAP = 8, PILL_FONT = "16px " + MONO;
 let debugRects = {};              /* page -> [[x, y, w, h, row, option]] as last drawn */
 function bgRows(){
-  /* the simulation's own eight, in the panel's order, after ROTATION */
+  /* ROTATION and the simulation's own styles, three to a row */
   const opts = [["rotation", "ROTATION", 0]].concat(STYLES.map(n => [n, n.toUpperCase(), 0]));
-  return [0, 3, 6].map(i => [i ? null : "BACKGROUND", "bg", opts.slice(i, i + 3)]);
+  const rows = [];
+  for (let i = 0; i < opts.length; i += 3) rows.push([i ? null : "BACKGROUND", "bg", opts.slice(i, i + 3)]);
+  return rows;
 }
 function pills(g, opts, cy, key, page, rects, ri){
   const ws = opts.map(([, t]) => width(g, t, PILL_FONT, 1.5) + 28);
@@ -4745,6 +4766,7 @@ function pressDebug(page, x, y){
   const [, key, opts] = d.rows[ri], [v, , to] = opts[oi];
   if (v === "clear"){ Object.assign(dbg, REAL); applyDebug(); slideTo(0); return; }
   if (v === "prompt"){ promptPending = true; slideTo(0); return; }
+  if (v === "wdtest"){ if (window.simWatchdogTest) window.simWatchdogTest(); slideTo(to); return; }
   dbg[key] = v; applyDebug();
   if (key === "air") setTab(2); else if (key === "fc") setTab(0);
   slideTo(to);
@@ -5430,6 +5452,303 @@ scenario("printing");
 
 })();
 /* ── end of the spliced printer view ── */
+
+/* ── the spirograph: spliced from round 28 by tools/splice_views.py ── */
+(() => {
+"use strict";
+/* ═══════════════════════════════════════════════════════════════════
+   Round 28 — the spirograph. A toothed wheel rolling inside a fixed
+   ring, a pen in one of its holes: the hypotrochoid
+
+       x = (R - r) cos u + d cos(((R - r) / r) u)
+       y = (R - r) sin u - d sin(((R - r) / r) u)
+
+   with R and r the teeth of the ring and the wheel and d the pen's
+   distance from the wheel's centre. Real Spirograph sizes, so every
+   pattern closes: it does after r / gcd(R, r) trips round the ring.
+
+   Revised after the first look (2026-10-08): Two Pens picked, at ink
+   0.28, and these are its flourish - five ways to show off the finished
+   pattern in its minute. The first version's Gear, Glow Pen and Ghost
+   Gear are in the published page's history.
+
+   The cycle: a pattern forms, a flourish shows it off - ten
+   minutes together - then it fades and a new one starts, six an hour.
+   Here that is 510 s drawing, 60 s flourish, 30 s fading out, and the
+   next pattern is a new seed from the same one, so a slot never repeats.
+
+   The usual rules hold: one shape as large as the panel (the figure's
+   reach is 330-420 px, so its outer loops meet the bezel - set past it
+   first, it showed only long arcs and lost the rosette that makes it a
+   spirograph), the panel's two inks, and nothing pops - a template fades in and out,
+   and a line only ever grows from its tip. Alphas are tuned at the
+   reference ink in each `k = ink / R`.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Settled 2026-10-08: four times the first version's speed, so a
+   pattern every 2.5 minutes - 24 an hour - at the same proportions. */
+const SP = {cycle: 150, draw: 127.5, flourish: 15, fade: 7.5};
+const RINGS = [96, 105];
+const WHEELS = [24, 30, 32, 40, 42, 45, 48, 50, 52, 56, 60, 63, 64, 72, 75, 80, 84];
+const gcd = (a, b) => b ? gcd(b, a % b) : a;
+
+/* One pattern, from the face's seed and the cycle's number: its teeth,
+   its pen and where it sits, and the curve sampled once. */
+function makeSpiro(seed, cycle, pens){
+  const rnd = mulberry32((seed + Math.imul(cycle + 1, 0x9e3779b1)) >>> 0);
+  let R, r, turns, tries = 0;
+  do {
+    R = RINGS[Math.floor(rnd() * RINGS.length)];
+    r = WHEELS[Math.floor(rnd() * WHEELS.length)];
+    turns = r / gcd(R, r);
+  } while ((r > R * .72 || turns < 5 || turns > 12) && ++tries < 200);
+  const holes = (pens || [.62 + rnd() * .33]).map(f => f * r);
+  const outer = R - r + Math.max(...holes);
+  /* px: the whole figure is the shape, so it mostly fits, the outer
+     loops reaching to the bezel and sometimes past it */
+  const reach = 330 + rnd() * 90;
+  const s = reach / outer, a0 = rnd() * TAU, dir = rnd() < .5 ? 1 : -1;
+  const U = TAU * turns, N = Math.min(7200, turns * 420);
+  const k = (R - r) / r, ca = Math.cos(a0), sa = Math.sin(a0);
+  const place = (x, y) => [400 + (x * ca - dir * y * sa) * s, 400 + (x * sa + dir * y * ca) * s];
+  const curves = holes.map(d => {
+    const pts = new Float32Array((N + 1) * 2);
+    for (let i = 0; i <= N; i++){
+      const u = U * i / N;
+      const [x, y] = place((R - r) * Math.cos(u) + d * Math.cos(k * u),
+                           (R - r) * Math.sin(u) - d * Math.sin(k * u));
+      pts[2 * i] = x; pts[2 * i + 1] = y;
+    }
+    return pts;
+  });
+  return {R, r, turns, holes, s, a0, dir, U, N, k, place, curves};
+}
+
+/* Test modes, from the buttons in the intro (2026-10-08): the live cycle;
+   the complete pattern held still; or the complete pattern and its
+   flourish on repeat, with a 3 s pause between, so neither needs a wait.
+   The meter always measures the live cycle. */
+window.SPIRO_MODE = window.SPIRO_MODE || "cycle";
+const LOOP = SP.flourish + 3;   /* 3 s of the complete pattern, then the flourish */
+
+/* the pattern for time t, cached a cycle at a time */
+function spiroAt(S, t){
+  const mode = window.SPIRO_MODE;
+  const c = mode === "cycle" ? Math.floor(t / SP.cycle) : 0;
+  if (!S.cur || S.cur.cycle !== c){ S.cur = makeSpiro(S.seed, c, S.pens); S.cur.cycle = c; }
+  if (mode !== "cycle"){
+    const local = t % LOOP, held = mode === "complete" || local < 3;
+    const lt = held ? SP.draw : SP.draw + (local - 3);
+    return {P: S.cur, lt, p: 1, q: held ? 0 : clamp01((lt - SP.draw) / SP.flourish), fade: 1, noTip: true,
+            phase: held ? "complete" : "flourish (repeat)"};
+  }
+  const lt = t - c * SP.cycle;
+  const p = clamp01(lt / SP.draw);
+  const q = clamp01((lt - SP.draw) / SP.flourish);
+  const fade = 1 - smooth((lt - SP.draw - SP.flourish) / SP.fade);
+  const phase = lt < SP.draw ? "drawing " + Math.round(p * 100) + "%" :
+                lt < SP.draw + SP.flourish ? "flourish" : "fading";
+  return {P: S.cur, lt, p, q, fade, phase};
+}
+
+/* the curve's first `n` samples, plus the exact point between two */
+function strokeTo(ctx, pts, n, frac){
+  ctx.beginPath();
+  ctx.moveTo(pts[0], pts[1]);
+  for (let i = 1; i <= n; i++) ctx.lineTo(pts[2 * i], pts[2 * i + 1]);
+  const tip = tipOf(pts, n, frac);
+  if (frac > 0) ctx.lineTo(tip[0], tip[1]);
+  ctx.stroke();
+}
+function tipOf(pts, n, frac){
+  const N = pts.length / 2 - 1;
+  if (n >= N) return [pts[2 * N], pts[2 * N + 1]];
+  return [pts[2 * n] + (pts[2 * n + 2] - pts[2 * n]) * frac,
+          pts[2 * n + 1] + (pts[2 * n + 3] - pts[2 * n + 1]) * frac];
+}
+/* a stretch [a, b] of samples, its alpha falling to nothing at `a` */
+function strokeTail(ctx, pts, a, b, colour, peak, width){
+  const parts = 6, span = (b - a) / parts;
+  ctx.lineWidth = width;
+  for (let j = 0; j < parts; j++){
+    const i0 = Math.max(0, Math.floor(a + j * span)), i1 = Math.floor(a + (j + 1) * span) + 1;
+    if (i1 <= i0) continue;
+    ctx.strokeStyle = colour(peak * (j + 1) / parts);
+    ctx.beginPath();
+    ctx.moveTo(pts[2 * i0], pts[2 * i0 + 1]);
+    for (let i = i0 + 1; i <= Math.min(i1, pts.length / 2 - 1); i++) ctx.lineTo(pts[2 * i], pts[2 * i + 1]);
+    ctx.stroke();
+  }
+}
+/* a soft spot of light */
+function glowAt(ctx, x, y, radius, alpha, rgb){
+  if (alpha <= 0.002) return;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+  g.addColorStop(0, "rgba(" + rgb + "," + alpha.toFixed(3) + ")");
+  g.addColorStop(.35, "rgba(" + rgb + "," + (alpha * .35).toFixed(3) + ")");
+  g.addColorStop(1, "rgba(" + rgb + ",0)");
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(x, y, radius, 0, TAU); ctx.fill();
+}
+/* where the drawing is: sample index and fraction for progress p */
+const progress = (P, p) => { const x = p * P.N, n = Math.min(P.N, Math.floor(x)); return [n, x - n]; };
+/* the wheel's centre and its turn at curve parameter u */
+function wheelAt(P, u){
+  const c = P.place((P.R - P.r) * Math.cos(u), (P.R - P.r) * Math.sin(u));
+  return {c, turn: -P.k * u};
+}
+const readout = (P, st, extra) => [["pattern", P.R + " ring · " + P.r + " wheel"], ["trips", P.turns],
+                                   ["phase", st.phase]].concat(extra || []);
+
+/* ── Two Pens, and five flourishes ────────────────────────────────── */
+/* The drawing is the same in all five: two pens in one wheel, one near
+   its rim and one halfway in, an ice line and a cyan one with glowing
+   tips. Only the flourish minute differs. A flourish returns what it
+   changes about the lines - their alpha and colour - and draws anything
+   of its own under or over them. */
+const PENS = [.86, .46], INK_REF = .28;
+const RGB = [ICE_RGB, CYAN_RGB].map(s => s.split(",").map(Number));
+const rgba = (c, a) => "rgba(" + c.map(Math.round).join(",") + "," + clamp01(a).toFixed(3) + ")";
+const mix = (a, b, f) => a.map((v, i) => v + (b[i] - v) * f);
+const BASE_A = [.36, .30];               /* each line's alpha at the reference ink */
+
+/* a soft glow under a whole line: three wide, faint strokes, widest
+   faintest. The aura's strength is a step on the page (2026-10-08: x1
+   was barely there), x3 to start. */
+window.SPIRO_AURA = window.SPIRO_AURA || 4;      /* x4, settled 2026-10-08 */
+function haloLine(ctx, pts, N, rgb, a){
+  if (a <= .002) return;
+  for (const [w, f] of [[22, .18], [12, .32], [5, .5]]){
+    ctx.lineWidth = w; ctx.strokeStyle = rgba(rgb, a * f);
+    strokeTo(ctx, pts, N, 0);
+  }
+}
+
+function twoPens(flourish, aura){
+  return {
+    make(seed){ return {seed, pens: PENS}; },
+    draw(ctx, S, t, ink){
+      const k = ink / INK_REF, st = spiroAt(S, t), P = st.P, [n, frac] = progress(P, st.p);
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      const tipA = st.noTip ? 0 : (1 - smooth((st.lt - SP.draw) / 2)) * smooth(st.lt / 2);
+      const on = st.q > 0 && st.q < 1;
+      const fl = on && flourish.under ? flourish.under(ctx, P, st, k) || {} : {};
+      if (on && aura && flourish.aura){                /* the glow aura, under the lines */
+        const g = flourish.aura(st, fl);
+        P.curves.forEach((pts, j) => haloLine(ctx, pts, P.N, (fl.rgb && fl.rgb[j]) || RGB[j],
+                                              .095 * k * g[j] * window.SPIRO_AURA));
+      }
+      P.curves.forEach((pts, j) => {
+        const rgb = (fl.rgb && fl.rgb[j]) || RGB[j], mul = fl.mul ? fl.mul[j] : 1;
+        ctx.lineWidth = 1.2; ctx.strokeStyle = rgba(rgb, BASE_A[j] * k * mul * st.fade);
+        strokeTo(ctx, pts, n, frac);
+        strokeTail(ctx, pts, n - P.N * .03, n, a => rgba(RGB[j], a), .5 * k * tipA, 1.5);
+        const tip = tipOf(pts, n, frac);
+        glowAt(ctx, tip[0], tip[1], 13, .6 * k * tipA, RGB[j].join(","));
+      });
+      if (st.q > 0 && st.q < 1 && flourish.over) flourish.over(ctx, P, st, k);
+      return readout(P, st, [["flourish", flourish.name]]);
+    },
+  };
+}
+/* the flourish's envelope: up from nothing and back, so it never pops */
+const env = st => Math.sin(Math.PI * st.q);
+
+const FLOURISHES = [
+  {id: "run", name: "Light Run", tag: "A LIGHT ALONG BOTH LINES",
+   made: "The first version's: a light travels the whole of both lines once, start to finish, with a glow at its head - the pattern drawn again in a minute.",
+   watch: "The reference. A small bright thing moving, as during the drawing.",
+   aura: st => [env(st) * .6, env(st) * .6],
+   over(ctx, P, st, k){
+     const head = smooth(clamp01((st.lt - SP.draw - 2) / (SP.flourish - 4))) * P.N, e = env(st);
+     P.curves.forEach((pts, j) => {
+       strokeTail(ctx, pts, head - P.N * .05, head, a => rgba(RGB[j], a), .55 * k * e, 1.7);
+       const h = tipOf(pts, Math.floor(head), head % 1);
+       glowAt(ctx, h[0], h[1], 15, .5 * k * e, RGB[j].join(","));
+     });
+   }},
+  {id: "pulse", name: "Pulse", tag: "THE WHOLE PATTERN GLOWS, THREE TIMES",
+   made: "The whole finished pattern <b>glows and settles three times</b> across the minute, each breath twenty seconds, both lines together: a soft wide halo under each line swells and the lines brighten with it.",
+   watch: "The only flourish that changes the whole face's brightness at once. Twenty-second breaths are slower than the alert flood's 2.4 s, so it should never be mistaken for one - worth confirming.",
+   under(ctx, P, st, k){
+     const g = Math.pow(Math.sin(Math.PI * 3 * st.q), 2) * env(st) ** .5;
+     return {mul: [1 + .7 * g, 1 + .7 * g], g: [g, g]};
+   },
+   aura: (st, fl) => fl.g},
+  {id: "alternate", name: "Alternating Pulse", tag: "THE TWO LINES BREATHE IN TURN",
+   made: "As Pulse, but the <b>ice and cyan patterns take turns</b>: the outer pen's line glows while the inner's dims, then the other way, three times each, so the two layers of the figure trade places.",
+   watch: "Whether it reads as the two layers being shown in turn, or as the pattern flickering.",
+   under(ctx, P, st, k){
+     const ph = Math.PI * 3 * st.q, e = env(st) ** .5;
+     const g = [Math.pow(Math.sin(ph), 2) * e, Math.pow(Math.cos(ph), 2) * e * smooth(st.q * 6) * smooth((1 - st.q) * 6)];
+     return {mul: [1 + .8 * g[0] - .35 * g[1], 1 + .8 * g[1] - .35 * g[0]], g};
+   },
+   aura: (st, fl) => fl.g.map(v => v * 1.25)},
+  {id: "ripple", name: "Ripple", tag: "A RING OF LIGHT SPREADS FROM THE CENTRE",
+   made: "A <b>ring of glow spreads out from the centre</b> over the minute, lighting each loop of both lines as it passes and leaving it as it was - the pattern shown inside out, twice.",
+   watch: "The most motion of the five, and the most like a show. A ring crossing the clock passes under the scrim; check it does not read as an alert.",
+   aura: st => [env(st) * .6, env(st) * .6],
+   over(ctx, P, st, k){
+     const e = env(st), front = ((st.q * 2) % 1) * 470, W = 55;
+     if (!P.radius){                                  /* each sample's distance from the centre, once */
+       P.radius = P.curves.map(pts => { const r = new Float32Array(pts.length / 2);
+         for (let i = 0; i < r.length; i++) r[i] = Math.hypot(pts[2 * i] - 400, pts[2 * i + 1] - 400); return r; });
+     }
+     ctx.lineWidth = 2.2;
+     P.curves.forEach((pts, j) => {
+       const R = P.radius[j];
+       let lvl = -1;
+       const flush = () => { if (lvl > 0) ctx.stroke(); };
+       for (let i = 0; i <= P.N; i++){
+         const w = Math.exp(-Math.pow((R[i] - front) / W, 2));
+         const L = w < .08 ? 0 : Math.min(5, Math.ceil(w * 5));
+         if (L !== lvl){
+           flush();
+           if (L > 0){ ctx.strokeStyle = rgba(RGB[j], .6 * k * e * L / 5); ctx.beginPath();
+                       const b = Math.max(0, i - 1); ctx.moveTo(pts[2 * b], pts[2 * b + 1]); }
+           lvl = L;
+         }
+         if (L > 0) ctx.lineTo(pts[2 * i], pts[2 * i + 1]);
+       }
+       flush();
+     });
+   }},
+  {id: "swap", name: "Colour Swap", tag: "THE PENS TRADE COLOURS",
+   made: "The two lines <b>trade colours</b> over the minute and trade back: ice turns cyan and cyan ice, crossing at the half minute, with a faint halo while they change.",
+   watch: "The quietest of the five: nothing moves and nothing brightens much. Whether that is calm or too little to notice.",
+   under(ctx, P, st, k){
+     const f = smooth(clamp01(st.q * 2)) * (1 - smooth(clamp01(st.q * 2 - 1))), e = env(st);
+     return {rgb: [mix(RGB[0], RGB[1], f), mix(RGB[1], RGB[0], f)], mul: [1 + .2 * e, 1 + .2 * e]};
+   },
+   aura: st => [env(st) * .65, env(st) * .65]},
+];
+
+/* each flourish twice: with the glow aura under the lines, and without */
+FLOURISHES.forEach(F => [true, false].forEach(aura => registerFace(Object.assign({
+  id: "pens-" + F.id + (aura ? "-aura" : ""), name: F.name + (aura ? " · Aura" : " · No Aura"),
+  short: F.name + (aura ? " + aura" : ""), tag: F.tag + (aura ? ", WITH AN AURA" : ""), group: "candidate",
+  ink: INK_REF, stateful: false, measureSpan: 150,
+  made: "Two pens in one wheel, an ice line and a cyan one, as picked. <b>The flourish:</b> " + F.made +
+        (aura ? " <b>With an aura:</b> a soft wide glow under both lines follows the flourish." :
+                " <b>No aura:</b> the lines alone brighten, with no glow round them."),
+  esc: "Two large nested shapes; the flourish is the only change, and it is a minute in ten.",
+  cost: "Two Pens' drawing, cached as a layer on the Pi. An aura is the cached line blurred once a pattern and faded per frame.",
+  watch: F.watch,
+}, twoPens(F, aura)))));
+
+/* the aura's strength, a step */
+document.querySelectorAll("[data-spiro-aura]").forEach(b => b.addEventListener("click", () => {
+  window.SPIRO_AURA = Number(b.dataset.spiroAura);
+  document.querySelectorAll("[data-spiro-aura]").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+}));
+/* the test-mode buttons in the intro */
+document.querySelectorAll("[data-spiro-mode]").forEach(b => b.addEventListener("click", () => {
+  window.SPIRO_MODE = b.dataset.spiroMode;
+  document.querySelectorAll("[data-spiro-mode]").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+}));
+
+})();
+/* ── end of the spliced spirograph ── */
 
 /* ════════════════════════════════════════════════════════════════════
    the loop
