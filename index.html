@@ -4407,9 +4407,11 @@ function battNow(){
   const v = dbg.batt;
   if (v === "charging") return {state: "charging", pct: 71};
   if (v === "full") return {state: "full", pct: 100};
-  return v === "real" ? simBattery() : {state: "battery", pct: +v};
+  return v === "real" ? simBattery() : {state: "battery", pct: +v, low: +v <= 15};
 }
-const battTone = b => b.state !== "battery" ? "ok" : b.pct <= BATT_BAD ? "bad" : b.pct <= BATT_WARN ? "warn" : "ok";
+/* the light's own low flag, amber, since 2026-10-07 - not a percentage; a
+   fake is low where the light would be, about 15% */
+const battTone = b => b.state !== "battery" ? "ok" : (b.low !== undefined ? b.low : b.pct <= 15) ? "warn" : "ok";
 const battLow = b => battTone(b) !== "ok";
 /* a battery, on its side: outline, nub, and a fill to its level */
 function battGlyph(g, x, y, w, h, frac, col, bolt){
@@ -4689,7 +4691,7 @@ const DEBUG_PAGES = {
   "-3": ["DEBUG · HEALTH", [
     ["HEALTH", "health", [["real", "REAL", 3], ["problems", "PROBLEMS", 3]]],
     ["BATTERY", "batt", [["real", "REAL", 3], ["charging", "CHARGING", 3], ["full", "FULL", 3]]],
-    [null, "batt", [["60", "60%", 0], ["22", "22%", 0], ["8", "8%", 0]]],
+    [null, "batt", [["60", "60%", 0], ["14", "14%", 0], ["8", "8%", 0]]],
     ["RADIO", "radio", [["real", "REAL", 3], ["weak", "WEAK", 3], ["lost", "LOST", 3]]]]],
   "-4": ["DEBUG · THE BACKGROUND", null],
 };
