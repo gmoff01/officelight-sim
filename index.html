@@ -2806,7 +2806,7 @@ function makeSnakes(seed, o){
     const x = o.x0 + (i + .5) * o.cell, y = o.y0 + (j + .5) * o.cell;
     if (Math.hypot(x - 400, y - 400) < FIELD_R){ ok[j * o.cols + i] = 1; cells.push(j * o.cols + i); }
   }
-  const W = {o, r, ok, cells, k: 0, snakes: []};
+  const W = {o, r, ok, cells, k: 0, snakes: [], seq: 0};   /* seq: heads arriving, in order */
   for (let s = 0; s < o.n; s++) W.snakes.push(spawnSnake(W, s));
   return W;
 }
@@ -2852,15 +2852,14 @@ function spawnSnake(W, id){
   const head = freeCell(W, occ), body = [head];
   let c = head;
   for (let k = 0; k < 3; k++){ const nb = snakeNbrs(W, c).filter(q => !occ[q] && !body.includes(q)); if (!nb.length) break; c = nb[0]; body.push(c); }
-  const s = {id, body, prev: body.slice(), food: -1, fk: 0, dying: 0, born: W.k, eaten: 0, grow: 0};
+  const s = {id, body, prev: body.slice(), food: -1, fk: 0, dying: 0, born: W.k, eaten: 0, grow: 0, seq: ++W.seq};
   for (const c2 of body) occ[c2] = 1;
   placeFood(W, s, occ);
   return s;
 }
-function stepSnakes(W){
-  for (const s of W.snakes){
-    s.prev = s.body.slice();
-    if (s.dying){ if (W.k - s.dying >= 3){ Object.assign(s, spawnSnake(W, s.id)); s.moved = W.k; } continue; }
+/* Where a snake moves next: the shortest path to its pellet, or else the
+   neighbour with the most room; -1 when it is boxed in. */
+function chooseMove(W, s){
     const occ = occupied(W), head = s.body[0];
     /* another snake's pellet is a wall: a snake never paths over it */
     for (const o of W.snakes) if (o !== s && o.food >= 0) occ[o.food] = 1;
@@ -2880,6 +2879,25 @@ function stepSnakes(W){
         if (fq.length > best){ best = fq.length; next = nb; }
       }
     }
+    return next;
+}
+function stepSnakes(W){
+  for (const s of W.snakes){
+    s.prev = s.body.slice();
+    if (s.dying){ if (W.k - s.dying >= 3){ Object.assign(s, spawnSnake(W, s.id)); s.moved = W.k; } continue; }
+    const head = s.body[0];
+    let next = chooseMove(W, s);
+    /* Boxed in by a head that came in beside it since it last moved: that
+       snake ran into it, so that snake dies, and this one moves on - the
+       crasher, not the one crashed into (2026-10-08, seen on the panel the
+       wrong way round: snakes move one after another, so the one moving
+       first could take the other's last way out - this step, or after it
+       moved the step before). A dying snake no longer holds its cells. */
+    if (next < 0){
+      const nbs = snakeNbrs(W, head);
+      const crasher = W.snakes.find(o => o !== s && !o.dying && o.seq > s.seq && nbs.includes(o.body[0]));
+      if (crasher){ crasher.dying = W.k; next = chooseMove(W, s); }
+    }
     if (next < 0){ s.dying = W.k; continue; }
     s.body.unshift(next);
     /* Growth is owed, not immediate: the step that swallows a pellet moves
@@ -2887,7 +2905,7 @@ function stepSnakes(W){
        the pellet is under the body. */
     if (s.grow > 0){ s.grow--; if (s.body.length >= W.o.max) s.dying = W.k; }
     else s.body.pop();
-    s.moved = W.k;
+    s.moved = W.k; s.seq = ++W.seq;
     if (next === s.food){
       s.eaten++; s.grow++;
       s.eat = {cell: next, from: head, k: W.k + 1};   /* drawn until the head has slid over it */
