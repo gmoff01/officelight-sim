@@ -448,7 +448,7 @@
       <p>Swipe right from the face for three pages of fakes: the meeting alert, the day - empty, one
       made-up meeting, or a whole busy one for the agenda -, the network,
       health and the dismiss prompt; the forecast, a weather alert, smoke and the printer's states; the
-      light's battery and its radio - weak, or not answering at all; and the background. Each press sets one and slides to where it shows, and <b>CLEAR ALL</b> puts
+      light's battery and its radio - weak, or not answering at all; and the background, and how fast it runs - four or twelve times, so the moments a background saves for once in a while come round on demand. Each press sets one and slides to where it shows, and <b>CLEAR ALL</b> puts
       everything back. While anything is faked a <b>DEBUG</b> pill sits under the card. A faked red alert
       is the face only - it never reaches the door. They replaced every keyboard shortcut, because the
       panel has no keyboard.</p>
@@ -3180,13 +3180,25 @@ function tickRotator(now, alerting){
 
 const bg = $("bg"), bgx = bg.getContext("2d");
 bgx.beginPath(); bgx.arc(400, 400, 400, 0, TAU); bgx.clip();
+/* The debug pages' background SPEED, x4 or x12 (2026-10-09), as the panel's
+   Rotator.set_speed: the style's clock carries on from where it is at the new
+   rate, so a change has no jump. The rotation stays on its own clock. */
+let bgSpeed = 1;
+function bgStyleTime(st){
+  const e = artClock - st.t0, w = st.warp || {e0: 0, s0: 0, sp: bgSpeed};
+  return w.s0 + (e - w.e0) * w.sp;
+}
+window.setBgSpeed = sp => {
+  if (current) current.warp = {e0: artClock - current.t0, s0: bgStyleTime(current), sp};
+  bgSpeed = sp;
+};
 function drawBackground(now, fade){
   bgx.clearRect(0, 0, 800, 800);
   if (fade <= 0.001) { drawnCount = 0; return; }
   bgx.save();
   bgx.globalAlpha = fade;
   const ink = GREEBLE_OPACITY[current.name];
-  const t = artClock - current.t0;
+  const t = bgStyleTime(current);
   if (current.name === "sky") drawnCount = drawSky(bgx, current.K, t, ink);
   else if (current.name === "board") drawnCount = drawBoard(bgx, current.B, t, ink);
   else if (current.name === "topo") drawnCount = drawTopo(bgx, current.T, t, ink);
@@ -4444,7 +4456,7 @@ W19.LAYOUTS.B.pick = (y, st) => y > 272 ? KEY[wx.tab] : null;
 const sc = {name: "today", sun: "markers"};
 /* every fake, at its real value */
 const REAL = {alert: "off", day: "real", net: "real", stale: "real", health: "real", prompt: "off",
-              fc: "live", walert: "none", air: "real", printer: "live", batt: "real", radio: "real", bg: "rotation"};
+              fc: "live", walert: "none", air: "real", printer: "live", batt: "real", radio: "real", bg: "rotation", bgspeed: "real"};
 const dbg = Object.assign({}, REAL);
 const AIR = () => dbg.air === "smoky" ? AQI_SMOKY : AQI_CAPTURED;
 let LIVE_ALERT = null;
@@ -4888,6 +4900,8 @@ function bgRows(){
   const opts = [["rotation", "ROTATION", 0]].concat(STYLES.map(n => [n, n.toUpperCase(), 0]));
   const rows = [];
   for (let i = 0; i < opts.length; i += 3) rows.push([i ? null : "BACKGROUND", "bg", opts.slice(i, i + 3)]);
+  /* the background's clock run fast, as debug_pages' SPEED (2026-10-09) */
+  rows.push(["SPEED", "bgspeed", [["real", "REAL", 0], ["4", "X4", 0], ["12", "X12", 0]]]);
   return rows;
 }
 function pills(g, opts, cy, key, page, rects, ri){
@@ -5026,6 +5040,7 @@ function applyDebug(){
     } else if (k === "fc"){ wx.data = FC[v]; resetWeather(); }
     else if (k === "printer" && window.PRV) PRV.scenario(PRINTER[v]);
     else if (k === "bg" && v !== "rotation") requestRotate(v);
+    else if (k === "bgspeed" && window.setBgSpeed) setBgSpeed(v === "real" ? 1 : +v);
   }
 }
 /* ── the light's battery, from its ack (round 25) ─────────────────── */
