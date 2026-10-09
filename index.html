@@ -1199,7 +1199,7 @@ function desiredStage(list, now){
 function stepAlert(now){
   const real = instances.filter(i => !dismissed.has(i.id) && !ignored(i));
   for (const i of real.filter(i => turnsRed(i) && !autoTriggered.has(i.id))
-                      .filter(i => (i.s - now) / 60 > 0 && (i.s - now) / 60 <= 2)
+                      .filter(i => (i.s - now) / 60 > -5 && (i.s - now) / 60 <= 2)   /* up to 5 min late, as LATE_MINUTES */
                       .sort((a, b) => a.s - b.s)){
     radioSend(CMD_RED); activeMode = CMD_RED; autoTriggered.set(i.id, i.s);
   }
