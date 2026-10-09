@@ -454,6 +454,17 @@
       panel has no keyboard.</p>
     </article>
     <article>
+      <span class="k">Alignment</span>
+      <h3>Truing the panel in its case</h3>
+      <p>The panel sits in a printed shell with seven heat-vent slits across the top, 15&deg; apart.
+      <b>CHECKS &middot; ALIGN</b> on the health debug page puts seven lines on those angles, and a bar across
+      the centre, as heavy as the clock's strokes, to sight against. The steps turn them a tenth of a degree
+      or a whole one at a time, and the readout says how far the panel is out. <b>FACE</b> shows the live
+      home screen turned by that much, so the correction can be judged in place, and <b>SET</b> keeps it:
+      the whole display then stays turned, and touch is turned back to match. Here, the angle set is kept
+      in this browser.</p>
+    </article>
+    <article>
       <span class="k">The printer</span>
       <h3>A camera window, and a printer that can ask for you</h3>
       <p>While the Prusa Core One+ prints, a button at two o'clock carries its progress as a ring and
@@ -3567,15 +3578,127 @@ mkBtn($("dbgcal"), "Let the card move on", () => {
 const face = $("face");
 face.id = "face";
 const stage = face.parentElement; stage.id = "stage0";
+
+/* ── the alignment screen and the display's turn (2026-10-09) ──────────
+   As face.align_screen and Dashboard's ALIGN: seven lines on the shell's
+   vent angles - centres at 0, +/-15, +/-30, +/-45 degrees - and a bar across
+   the centre, 10 px wide, which the steps turn; FACE shows the live face
+   turned by the offset, with RESET, SET and LINES; SET keeps the angle
+   (here in this browser, per visitor) and the whole face stays turned.
+   The face turns as a CSS rotation, and taps are measured against the
+   stage, which never turns, then turned back - a rotated element's
+   bounding box grows, so the face's own would put every tap wrong. */
+const ALN = {open: false, view: "lines", off: 0, set: 0, from: null};
+try { ALN.set = Math.round(10 * (+localStorage.getItem("officelight-sim-rotation") || 0)) / 10; } catch (e) {}
+const ALN_STEPS = [-1, -0.1, 0.1, 1];
+const ALN_ANGLES = [-45, -30, -15, 0, 15, 30, 45];
+const ALN_PANEL = [216, 428, 368, 176];
+const alnCanvas = document.createElement("canvas");
+alnCanvas.className = "layer"; alnCanvas.width = alnCanvas.height = 1600;
+alnCanvas.style.zIndex = 4; alnCanvas.style.display = "none"; alnCanvas.setAttribute("aria-hidden", "true");
+face.appendChild(alnCanvas);
+const alnRound = v => Math.round(v * 10) / 10;
+const alnShown = () => ALN.open ? (ALN.view === "face" ? ALN.off : 0) : ALN.set;
+/* the same controls on both views: the steps, then FACE (LINES on the
+   face view), RESET, SET and DISMISS in one row */
+const ALN_LABELS = {face: "FACE", lines: "LINES", reset: "RESET", set: "SET", dismiss: "DISMISS"};
+function alnZones(){
+  const z = {}, total = 4 * 84 + 3 * 12, x0 = Math.round(400 - total / 2);
+  ALN_STEPS.forEach((st, i) => { z[st] = [x0 + i * 96, 520, 84, 50]; });
+  const rt = 4 * 112 + 3 * 10, r0 = 400 - rt / 2;
+  ["face", "reset", "set", "dismiss"].forEach((n, i) => { z[n] = [Math.round(r0 + i * 122), 592, 112, 58]; });
+  return z;
+}
+function alnPanelZones(){
+  const [px, py, pw] = ALN_PANEL, z = {}, gap = (pw - 16 - 4 * 80) / 3;
+  ALN_STEPS.forEach((st, i) => { z[st] = [Math.round(px + 8 + i * (80 + gap)), py + 50, 80, 44]; });
+  const w2 = Math.floor((pw - 16 - 3 * 8) / 4);
+  ["lines", "reset", "set", "dismiss"].forEach((n, i) => { z[n] = [Math.round(px + 8 + i * ((pw - 16 - 24) / 4 + 8)), py + 112, w2, 44]; });
+  return z;
+}
+const alnSigned = v => (v >= 0 ? "+" : "\u2212") + Math.abs(v).toFixed(1) + "\u00b0";
+const alnStep = v => (v > 0 ? "+" : "\u2212") + Math.abs(v) + "\u00b0";
+function alnButton(g, [x, y, w, h], text, colour){
+  g.strokeStyle = "rgb(27,50,80)"; g.lineWidth = 1;
+  g.beginPath(); g.roundRect(x + .5, y + .5, w - 1, h - 1, 10); g.stroke();
+  g.fillStyle = colour; g.fillText(text, x + w / 2, y + h / 2 + 1);
+}
+function alnDraw(){
+  const g = alnCanvas.getContext("2d");
+  g.setTransform(2, 0, 0, 2, 0, 0);
+  g.clearRect(0, 0, 800, 800);
+  alnCanvas.style.display = ALN.open ? "block" : "none";
+  face.style.transform = Math.abs(alnShown()) >= .005 ? "rotate(" + alnShown() + "deg)" : "";
+  if (!ALN.open) return;
+  g.textAlign = "center"; g.textBaseline = "middle";
+  try { g.letterSpacing = "1.6px"; } catch (e) {}
+  if (ALN.view === "face"){
+    const [px, py, pw, ph] = ALN_PANEL;
+    g.fillStyle = "rgba(9,16,27,.92)"; g.beginPath(); g.roundRect(px, py, pw, ph, 18); g.fill();
+    g.strokeStyle = "rgb(27,50,80)"; g.lineWidth = 1; g.beginPath(); g.roundRect(px + .5, py + .5, pw - 1, ph - 1, 18); g.stroke();
+    g.font = "14px 'Share Tech Mono', monospace"; g.fillStyle = "rgb(214,242,255)";
+    g.fillText("TURNED " + alnSigned(ALN.off) + "  \u00b7  SET " + alnSigned(ALN.set), 400, py + 24);
+    g.font = "20px 'Share Tech Mono', monospace";
+    const z = alnPanelZones(), changed = Math.abs(ALN.off - ALN.set) >= .05;
+    ALN_STEPS.forEach(st => alnButton(g, z[st], alnStep(st), "rgb(214,242,255)"));
+    g.font = "16px 'Share Tech Mono', monospace";            /* four to a row inside the dial's ring */
+    ["lines", "reset", "set", "dismiss"].forEach(n => alnButton(g, z[n], ALN_LABELS[n],
+      n !== "set" ? "rgb(214,242,255)" : changed ? "rgb(255,179,57)" : "rgb(91,125,156)"));
+    return;
+  }
+  /* the lines: opaque over the face, turned exactly by the offset */
+  g.fillStyle = "rgb(5,8,14)"; g.fillRect(0, 0, 800, 800);
+  g.strokeStyle = "rgba(91,125,156,.6)"; g.lineWidth = 1; g.beginPath(); g.arc(400, 400, 399, 0, 2 * Math.PI); g.stroke();
+  g.strokeStyle = "rgb(214,242,255)"; g.lineWidth = 10; g.lineCap = "butt";
+  const ray = (deg, r0, r1) => { const a = (deg + ALN.off) * Math.PI / 180, ux = Math.sin(a), uy = -Math.cos(a);
+    g.beginPath(); g.moveTo(400 + r0 * ux, 400 + r0 * uy); g.lineTo(400 + r1 * ux, 400 + r1 * uy); g.stroke(); };
+  ALN_ANGLES.forEach(d => ray(d, 110, 400));
+  ray(90, -400, 400);                                     /* the bar across */
+  g.font = "14px 'Share Tech Mono', monospace"; g.fillStyle = "rgb(91,125,156)";
+  g.fillText("7 LINES \u00b7 CENTRES AT \u00b145\u00b0 \u00b7 15\u00b0 APART \u00b7 A BAR ACROSS", 400, 440);
+  g.font = "20px 'Share Tech Mono', monospace";
+  const on = Math.abs(ALN.off) < .05;
+  g.fillStyle = on ? "rgb(91,125,156)" : "rgb(214,242,255)";
+  g.fillText((on ? "ON THE PANEL'S VERTICAL" : "TURNED " + alnSigned(ALN.off) + " " +
+             (ALN.off > 0 ? "CLOCKWISE" : "ANTICLOCKWISE")) + " \u00b7 SET " + alnSigned(ALN.set), 400, 484);
+  const z = alnZones(), changed = Math.abs(ALN.off - ALN.set) >= .05;
+  ALN_STEPS.forEach(st => alnButton(g, z[st], alnStep(st), "rgb(214,242,255)"));
+  ["face", "reset", "set", "dismiss"].forEach(n => alnButton(g, z[n], ALN_LABELS[n],
+    n !== "set" ? "rgb(214,242,255)" : changed ? "rgb(255,179,57)" : "rgb(91,125,156)"));
+}
+/* a tap while it is open: modal, as on the panel */
+function alnTap(x, y){
+  const zones = ALN.view === "face" ? alnPanelZones() : alnZones();
+  for (const [what, [zx, zy, zw, zh]] of Object.entries(zones)){
+    if (x < zx || x > zx + zw || y < zy || y > zy + zh) continue;
+    if (what === "dismiss"){ ALN.open = false; if (ALN.from !== null) PGV.slideTo(ALN.from); }
+    else if (what === "face"){ if (ALN.from === null) ALN.from = -3; PGV.slideTo(0); ALN.view = "face"; }
+    else if (what === "lines") ALN.view = "lines";
+    else if (what === "reset") ALN.off = 0;
+    else if (what === "set"){ ALN.set = alnRound(ALN.off);
+      try { localStorage.setItem("officelight-sim-rotation", String(ALN.set)); } catch (e) {} }
+    else ALN.off = alnRound(ALN.off + +what);
+    break;
+  }
+  alnDraw();
+}
+window.simAlign = () => { ALN.open = true; ALN.view = "lines"; ALN.off = ALN.set; ALN.from = null; alnDraw(); };
+alnDraw();
+
 function faceCoords(ev){
-  const r = face.getBoundingClientRect();
-  return [(ev.clientX - r.left) / r.width * 800, (ev.clientY - r.top) / r.height * 800];
+  const r = stage.getBoundingClientRect();
+  let x = (ev.clientX - r.left) / r.width * 800, y = (ev.clientY - r.top) / r.height * 800;
+  const a = -alnShown() * Math.PI / 180;                 /* the turn shown, undone */
+  if (a){ const dx = x - 400, dy = y - 400;
+    x = 400 + dx * Math.cos(a) - dy * Math.sin(a); y = 400 + dx * Math.sin(a) + dy * Math.cos(a); }
+  return [x, y];
 }
 const inCard = (x, y) => x >= CARD_ZONE.x0 && x <= CARD_ZONE.x1 &&
                          y >= CARD_ZONE.y0 && y <= CARD_ZONE.y1;
 face.addEventListener("pointerdown", ev => {
   const [x, y] = faceCoords(ev), t = rt();
   if (poweredOff) return;
+  if (ALN.open){ alnTap(x, y); return; }
   /* going down, nothing answers; a refusal is closed by any tap */
   if (shutdown){ if (shutdown.status !== "stopping") shutdown = null; return; }
   /* The confirmation is modal, so it answers before the dial: its buttons
@@ -4755,7 +4878,7 @@ const DEBUG_PAGES = {
     [null, "batt", [["60", "60%", 0], ["14", "14%", 0], ["8", "8%", 0]]],
     ["RADIO", "radio", [["real", "REAL", 3], ["weak", "WEAK", 3], ["lost", "LOST", 3]]],
     /* the light freezes on purpose; its watchdog restarts it in its mode (2026-10-08) */
-    ["WATCHDOG", null, [["wdtest", "TEST", 3]]]]],
+    ["CHECKS", null, [["wdtest", "WATCHDOG", 3], ["align", "ALIGN", -3]]]]],
   "-4": ["DEBUG · THE BACKGROUND", null],
 };
 const ROW_Y0 = 290, ROW_PITCH = 66, PILL_H = 34, PILL_GAP = 8, PILL_FONT = "16px " + MONO;
@@ -4810,6 +4933,7 @@ function pressDebug(page, x, y){
   const [, key, opts] = d.rows[ri], [v, , to] = opts[oi];
   if (v === "clear"){ Object.assign(dbg, REAL); applyDebug(); slideTo(0); return; }
   if (v === "prompt"){ promptPending = true; slideTo(0); return; }
+  if (v === "align"){ if (window.simAlign) window.simAlign(); return; }
   if (v === "wdtest"){ if (window.simWatchdogTest) window.simWatchdogTest(); slideTo(to); return; }
   dbg[key] = v; applyDebug();
   if (key === "air") setTab(2); else if (key === "fc") setTab(0);
