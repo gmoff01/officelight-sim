@@ -477,9 +477,14 @@
       <span class="k">The calendar</span>
       <h3>Only a meeting you accepted turns the light red</h3>
       <p>The parser resolves <b>your own</b> attendance and never borrows another attendee's.
-      Red needs an explicit <code>PARTSTAT=ACCEPTED</code> or you as organiser, and a timed
-      event. Everything else still shows on the card and still gets the amber
-      heads&#8209;up &mdash; only the physical light is held back.</p>
+      Red needs an explicit <code>PARTSTAT=ACCEPTED</code>, you as organiser, or an event of
+      yours with no guests, and a timed event. Everything else still shows on the card and
+      still gets the amber heads&#8209;up &mdash; only the physical light is held back.
+      <b>Out of office</b> shows too, but never turns the light red or raises the amber.
+      The light reads <b>every</b> meeting of the day, not just the one on the card, so a
+      tentative meeting under way cannot hide the accepted one about to start
+      (<b>DAY &middot; OVERLAP</b> on the debug pages shows it), and a demo on the debug pages
+      never silences a real meeting.</p>
     </article>
     <article>
       <span class="k">The calendar</span>
@@ -828,6 +833,10 @@ const rt = () => performance.now() / 1000;
 const CARD_FADE_SECONDS = 0.4, NET_FADE = 0.3;
 const SHUTDOWN_HOLD_SECONDS = 3.0, HOLD_SHOW_AFTER = 0.25, HOLD_R = 388;
 const IGNORE_PATTERNS = ["lunch"];
+/* shown, but never turns the light red and raises no yellow: Google exports an
+   out-of-office block as his own event, and only the title tells it apart (2026-10-09) */
+const QUIET_PATTERNS = ["out of office"];
+const isQuiet = i => QUIET_PATTERNS.some(p => (i.summary || "").toLowerCase().includes(p));
 
 /* ════════════════════════════════════════════════════════════════════
    the receiver — a port of receiver_sim.py, which is itself a port of
@@ -1100,7 +1109,8 @@ const ignored = i => ignoreLunch &&
 /* Of those not ended, the first that began less than the grace ago; failing
    that, the one ending soonest — the next thing that changes. */
 function cardFrom(now){
-  const live = instances.filter(i => i.e > now && !dismissed.has(i.id) && !ignored(i));
+  const live = instances.filter(i => i.e > now && !dismissed.has(i.id) && !ignored(i))
+    .sort((a, b) => a.s - b.s || b.busy - a.busy);   /* at a shared start, the one that turns it red */
   if (!live.length) return Object.assign({}, EMPTY_CARD);
   const grace = GRACE_MINUTES * 60;
   let nxt = live.find(i => now - i.s < grace);
@@ -1120,7 +1130,7 @@ function liveMinutes(){
   if (!card.has || card.start === null) return null;
   return (card.start - simNow()) / 60;
 }
-const dismissible = () => card.has && !card.busy && !!card.id;
+const dismissible = () => card.has && (!card.busy || isQuiet(card)) && !!card.id;
 function dismiss(id){
   if (!id) return;
   dismissed.add(id);
@@ -1144,7 +1154,7 @@ let health = {calAge:0, wxAge:0, calDead:false, wxDead:false};
    ════════════════════════════════════════════════════════════════════ */
 const A_OFF = 0, A_YELLOW = 1, A_RED = 2;
 let alertStage = A_OFF, alertStart = 0, alertStop = 0, alertOut = false;
-let autoTriggered = null;
+const autoTriggered = new Map();   /* event id -> start: each red sent once */
 let activeMode = CMD_OFF;
 let detents = [1, 0, 0, 0];
 let partySince = null;
@@ -1167,35 +1177,45 @@ function tickFlood(dt, now){
 }
 
 function resetAlert(){
-  alertStage = A_OFF; alertOut = false; autoTriggered = null;
+  alertStage = A_OFF; alertOut = false;
+}
+/* From every occurrence, not the card (2026-10-09), as the panel's automation.py:
+   the card keeps a meeting under way for ten minutes, so a tentative one just
+   before an accepted one used to hold it through the red window and the light
+   never changed. The light reads the real calendar whatever is faked; the
+   face's alert follows the day it is shown, a faked busy day included. */
+const turnsRed = i => i.busy && !isQuiet(i);
+function desiredStage(list, now){
+  let stage = A_OFF;
+  for (const i of list){
+    if (isQuiet(i)) continue;
+    const m = (i.s - now) / 60;
+    if (!(m > 0 && m <= 10)) continue;
+    if (m <= 2 && turnsRed(i)) return A_RED;
+    stage = A_YELLOW;
+  }
+  return stage;
 }
 function stepAlert(now){
-  const mins = liveMinutes();
-  const retire = () => { if (alertStage !== A_OFF && !alertOut){ alertOut = true; alertStop = now; } };
-  if (!card.has || mins === null){ retire(); return; }
-  if (card.busy){
-    if (mins > 2 && mins <= 10){
-      if (alertStage !== A_YELLOW && alertStage !== A_RED){
-        alertStage = A_YELLOW; alertStart = now; alertOut = false;
-      }
-    } else if (mins > 0 && mins <= 2){
-      if (alertStage !== A_RED){
-        if (alertStage === A_OFF) alertStart = now;
-        alertStage = A_RED; alertOut = false;
-      }
-      if (autoTriggered !== card.id){
-        /* the debug pages' busy day is made up: its red is the face only */
-        if (!PGV.faceOnly()){ radioSend(CMD_RED); activeMode = CMD_RED; }
-        autoTriggered = card.id;
-      }
-    } else retire();
-  } else if (card.has){
-    /* not accepted: the amber heads-up, but never the light */
-    if (mins > 0 && mins <= 10){
-      if (alertStage === A_OFF){ alertStage = A_YELLOW; alertStart = now; alertOut = false; }
-    } else retire();
-  } else retire();
-
+  const real = instances.filter(i => !dismissed.has(i.id) && !ignored(i));
+  for (const i of real.filter(i => turnsRed(i) && !autoTriggered.has(i.id))
+                      .filter(i => (i.s - now) / 60 > 0 && (i.s - now) / 60 <= 2)
+                      .sort((a, b) => a.s - b.s)){
+    radioSend(CMD_RED); activeMode = CMD_RED; autoTriggered.set(i.id, i.s);
+  }
+  for (const [id, at] of autoTriggered) if (now - at > 3600) autoTriggered.delete(id);
+  const src = PGV.alertSource(real);         /* null: a faked alert or day holds the face */
+  if (src === null){
+    if (alertStage !== A_OFF && alertOut && now - alertStop >= 1.0) resetAlert();
+    return;
+  }
+  const want = desiredStage(src, now);
+  if (want === A_OFF){
+    if (alertStage !== A_OFF && !alertOut){ alertOut = true; alertStop = now; }
+  } else if (alertStage !== want || alertOut){
+    if (alertStage === A_OFF || alertOut) alertStart = now;
+    alertStage = want; alertOut = false;
+  }
   if (alertStage !== A_OFF && alertOut && now - alertStop >= 1.0) resetAlert();
 }
 
@@ -3106,15 +3126,20 @@ function buildStyle(name){
 }
 let styleIdx = 0;
 let bag = [], current = null;
-function nextStyle(){
+function nextStyle(ok){
   if (!bag.length){
     bag = STYLES.slice();
     for (let i = bag.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; }
     if (current && bag[0] === current.name) [bag[0], bag[1]] = [bag[1], bag[0]];
   }
-  return bag.shift();
+  const i = ok ? Math.max(0, bag.findIndex(ok)) : 0;
+  return bag.splice(i, 1)[0];
 }
-current = buildStyle(nextStyle());
+/* The first pick is made while the page is still loading, before the faces
+   spliced in near its end have registered - the spirograph's. Shuffled since
+   2026-10-08, the first pick was Spiro one load in nine and the page died
+   (FACE[...] undefined); before, it was always Sky (2026-10-09). */
+current = buildStyle(nextStyle(n => !FACE_OF[n] || FACE[FACE_OF[n]]));
 let handover = null;                    /* {phase, until, next} */
 let drawnCount = 0;
 
@@ -4712,7 +4737,8 @@ const drawAgenda = g => ({A: agendaList, B: agendaDay, C: agendaArc})[AG.layout]
 const DEBUG_PAGES = {
   "-1": ["DEBUG · THE FACE", [
     ["MEETING ALERT", "alert", [["off", "OFF", 0], ["yellow", "YELLOW", 0], ["red", "RED", 0]]],
-    ["DAY", "day", [["real", "REAL", 0], ["empty", "EMPTY", 0], ["meeting", "MEETING", 0], ["busy", "BUSY", 1]]],
+    ["DAY", "day", [["real", "REAL", 0], ["empty", "EMPTY", 0], ["meeting", "MEETING", 0], ["busy", "BUSY", 1],
+                    ["overlap", "OVERLAP", 0]]],
     ["NETWORK", "net", [["real", "REAL", 0], ["offline", "OFFLINE", 0], ["refused", "REFUSED", 0]]],
     /* a feed not updating, which takes the weather line's place label (round 27) */
     ["STALE", "stale", [["real", "REAL", 0], ["cal", "CALENDAR", 0], ["calnone", "NEVER", 0], ["wx", "WEATHER", 0]]],
@@ -4860,11 +4886,12 @@ function applyDebug(){
         alertStage = v === "yellow" ? A_YELLOW : A_RED; alertOut = false; alertFaked = true;
       }
     } else if (k === "day"){
-      /* the automation is off while the day is faked: retire a real alert */
+      /* the face's alert follows the faked day now: retire a real one */
       if (!alertFaked && alertStage !== A_OFF && !alertOut){ alertOut = true; alertStop = simNow(); }
       busyDay = null;
       if (v === "real") dayCard = null;
       else if (v === "busy"){ dayCard = null; busyDay = makeBusyDay(); }
+      else if (v === "overlap"){ dayCard = null; busyDay = makeOverlapDay(); }
       else if (v === "empty") dayCard = Object.assign({}, EMPTY_CARD);
       else dayCard = {summary: "Quarterly Platform and Infrastructure Planning Review", minutes: 25,
                       start: simNow() + 25 * 60, has: true, partstat: "NEEDS-ACTION", id: "debug_meeting", busy: false};
@@ -4909,9 +4936,20 @@ function makeBusyDay(){
     .map(([at, mins, summary, partstat], k) => ({s: base + at * 60, e: base + (at + mins) * 60, summary, partstat,
                                                  busy: partstat === "ACCEPTED", id: "debug-busy-" + k}));
 }
+/* DAY · OVERLAP (2026-10-09), as the panel's _overlap_day: a tentative meeting
+   four minutes in, holding the card, and an accepted one starting in three - the
+   yellow at once, red a minute later, though the card still shows the tentative
+   one. Before the alert read every occurrence, it never went red here. */
+function makeOverlapDay(){
+  const now = simNow();
+  return [[-4, 30, "Optional Sync", "TENTATIVE"], [3, 30, "Design Review", "ACCEPTED"]]
+    .map(([at, mins, summary, partstat], k) => ({s: now + at * 60, e: now + (at + mins) * 60, summary, partstat,
+                                                 busy: partstat === "ACCEPTED", id: "debug-overlap-" + k}));
+}
 /* the card from the busy day, as cardFrom builds it from the calendar */
 function busyCard(now){
-  const live = busyDay.filter(i => i.e > now && !dismissed.has(i.id));
+  const live = busyDay.filter(i => i.e > now && !dismissed.has(i.id))
+    .sort((a, b) => a.s - b.s || b.busy - a.busy);
   if (!live.length) return Object.assign({}, EMPTY_CARD);
   let nxt = live.find(i => now - i.s < GRACE_MINUTES * 60);
   if (!nxt) nxt = live.reduce((a, b) => (b.e < a.e ? b : a));
@@ -4922,7 +4960,7 @@ function agSource(){
   if (dbg.day === "empty") return [];
   if (dbg.day === "meeting" && dayCard)
     return [{s: minsOf(dayCard.start), e: minsOf(dayCard.start) + 30, t: dayCard.summary, p: dayCard.partstat}];
-  const src = dbg.day === "busy" && busyDay ? busyDay
+  const src = busyDay ? busyDay
             : instances.filter(i => sameDay(i.s) && !ignored(i));
   return src.filter(i => !dismissed.has(i.id))
     .map(i => ({s: sameDay(i.s) ? minsOf(i.s) : 0, e: sameDay(i.e) ? minsOf(i.e) : 24 * 60, t: i.summary, p: i.partstat}))
@@ -4957,9 +4995,13 @@ function tickFakes(t){
     prompt.id = "debug-prompt";           /* so DISMISS cannot drop the real meeting behind it */
   }
 }
-/* the busy day runs the automation - but its red is the face only */
-const automationOff = () => alertFaked || (dbg.day !== "real" && dbg.day !== "busy");
-const faceOnly = () => dbg.day === "busy";
+/* the face's alert is held by a faked alert, or a faked empty or one-meeting day;
+   a faked busy or overlap day drives it, its red the face only (nothing real is in
+   it). The light reads the real calendar whatever is faked (2026-10-09). */
+const automationOff = () => alertFaked || (dbg.day !== "real" && !busyDay);
+const faceOnly = () => !!busyDay;
+const alertSource = real => automationOff() ? null
+  : busyDay ? busyDay.filter(i => !dismissed.has(i.id)) : real;
 
 /* the system, as health reads it */
 function inHours(){
@@ -5157,7 +5199,7 @@ const live = {
   alert(a){ LIVE_ALERT = a; },
 };
 window.PGV = {live, down, move, up, pageTap, faceTap, tick, visible, settled, state, faked, stripText, dateTap, feedState,
-              automationOff, close: () => slideTo(0), slideTo, cardNow: c => busyDay ? busyCard(simNow()) : dayCard || c, faceOnly, AGENDA: P_AGENDA, WEATHER: P_WEATHER,
+              automationOff, alertSource, close: () => slideTo(0), slideTo, cardNow: c => busyDay ? busyCard(simNow()) : dayCard || c, faceOnly, AGENDA: P_AGENDA, WEATHER: P_WEATHER,
               locked: () => locked, closeCamera: () => closeCam, radioLost: () => dbg.radio === "lost", mix, ease, CLOCK_BOX: {x0: 270, x1: 530, y0: 66, y1: 166},
               inClock: (x, y) => inZone(ZONE_CLOCK, x, y)};
 resetWeather();
@@ -5794,8 +5836,8 @@ function frame(){
   if (now - cardBuiltAt >= CARD_REFRESH_SECONDS){
     cardBuiltAt = now; card = PGV.cardNow(cardFrom(now));
   }
-  /* a faked alert or day holds the automation off, as on the panel */
-  if (!poweredOff && !PGV.automationOff()) stepAlert(now);
+  /* the light reads the real calendar always; a faked alert or day holds only the face's alert */
+  if (!poweredOff) stepAlert(now);
 
   /* the dial */
   if (activeMode === CMD_PARTY){
