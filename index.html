@@ -440,7 +440,9 @@
       the printer. When something there wants a look a dot glows at ten o'clock and slides straight to it.
       The arc and the dial never move; a tap on the small clock or five minutes untouched brings the face
       back. A meeting alert does too, when it starts and when it turns red, then lets go - and for the last
-      30 seconds before the meeting the face is locked.</p>
+      30 seconds before the meeting the face is locked. And when a meeting that turned it red has ended with the light still red, the face asks once,
+      two minutes on: <b>Still red?</b> Keep or Green. It never goes green by itself, and does not ask while
+      another meeting is under way.</p>
     </article>
     <article>
       <span class="k">Debug pages</span>
@@ -1213,8 +1215,10 @@ function stepAlert(now){
                       .filter(i => (i.s - now) / 60 > -5 && (i.s - now) / 60 <= 2)   /* up to 5 min late, as LATE_MINUTES */
                       .sort((a, b) => a.s - b.s)){
     radioSend(CMD_RED); activeMode = CMD_RED; autoTriggered.set(i.id, i.s);
+    stillRedWatch.set(i.id, {end: i.e, summary: i.summary});
   }
   for (const [id, at] of autoTriggered) if (now - at > 3600) autoTriggered.delete(id);
+  stepStillRed(real, now);
   const src = PGV.alertSource(real);         /* null: a faked alert or day holds the face */
   if (src === null){
     if (alertStage !== A_OFF && alertOut && now - alertStop >= 1.0) resetAlert();
@@ -1230,6 +1234,42 @@ function stepAlert(now){
   if (alertStage !== A_OFF && alertOut && now - alertStop >= 1.0) resetAlert();
 }
 
+/* The still-red prompt (2026-10-09), as automation.still_red_due and the
+   panel's step_still_red: when a meeting the calendar turned red has ended
+   and the light is still red, ask once - KEEP or GREEN - two minutes after
+   the end, unless another meeting is under way or the face is about to warn.
+   It never goes green by itself. */
+const STILL_RED_AFTER = 2, STILL_RED_GIVE_UP = 60, STILL_RED_TIMEOUT = 600;
+const stillRedWatch = new Map(), stillRedAsked = new Set();
+const inProgress = (list, now) => list.filter(i => !isQuiet(i) && i.s <= now && now < i.e);
+function stillRedDue(watch, list, now, asked){
+  if (inProgress(list, now).length || desiredStage(list, now) !== A_OFF) return null;
+  let best = null;
+  for (const [id, w] of watch){
+    if (asked.has(id)) continue;
+    const since = (now - w.end) / 60;
+    if (since >= STILL_RED_AFTER && since < STILL_RED_GIVE_UP && (best === null || w.end > watch.get(best).end)) best = id;
+  }
+  return best;
+}
+function stepStillRed(list, now){
+  for (const [id, w] of stillRedWatch) if (now - w.end > 7200){ stillRedWatch.delete(id); stillRedAsked.delete(id); }
+  if (prompt && prompt.kind === "stillred"){
+    if (prompt.closing === null && !String(prompt.id).startsWith("debug") &&
+        (activeMode !== CMD_RED || inProgress(list, now).length || desiredStage(list, now) !== A_OFF)) closeConfirm(rt());
+    return;
+  }
+  if (prompt || shutdown || activeMode !== CMD_RED) return;
+  const id = stillRedDue(stillRedWatch, list, now, stillRedAsked);
+  if (id === null) return;
+  stillRedAsked.add(id);
+  openConfirm("stillred", {id, meeting: stillRedWatch.get(id).summary});
+}
+function stillRedGreen(p){
+  if (String(p.id).startsWith("debug")) return;      /* a fake never reaches the light */
+  activeMode = CMD_GREEN; radioSend(CMD_GREEN);
+}
+
 /* ════════════════════════════════════════════════════════════════════
    the confirmation — two movements, and modal
    ════════════════════════════════════════════════════════════════════ */
@@ -1239,14 +1279,17 @@ const PROMPTS = {
   dismiss:  {title:"Dismiss this meeting?", no:"Keep", yes:"Dismiss", colour:"var(--amber)"},
   shutdown: {title:"Shut down the dashboard?", no:"Keep", yes:"Shut down",
              colour:"var(--crimson)"},
+  stillred: {title:"Still red?", no:"Keep", yes:"Green", colour:"var(--jade)"},
 };
-function openConfirm(kind){
+function openConfirm(kind, opts){
   kind = kind || "dismiss";
+  opts = opts || {};
   const Q = PROMPTS[kind];
-  prompt = {kind, id: card.id,
+  prompt = {kind, id: opts.id !== undefined ? opts.id : card.id, meeting: opts.meeting,
             body: kind === "shutdown" ? "Unplug and replug it to start again."
+                : kind === "stillred" ? opts.meeting + " has ended"
                                       : (summaryFor(card) || "this meeting"),
-            opened: rt(), closing: null};
+            opened: rt(), closing: null, timeout: kind === "stillred" ? STILL_RED_TIMEOUT : CONFIRM_TIMEOUT};
   $("cfmt").textContent = Q.title;
   $("cfmno").textContent = Q.no;
   $("cfmyes").textContent = Q.yes;
@@ -1259,7 +1302,7 @@ function confirmOpen(now){
 }
 function tickConfirm(now){               /* linear: draw eases each phase */
   if (!prompt) return null;
-  if (prompt.closing === null && now - prompt.opened > CONFIRM_TIMEOUT) closeConfirm(now);
+  if (prompt.closing === null && now - prompt.opened > (prompt.timeout || CONFIRM_TIMEOUT)) closeConfirm(now);
   if (prompt.closing === null) return Math.min(1, (now - prompt.opened) / CONFIRM_SECONDS);
   const p = Math.max(0, 1 - (now - prompt.closing) / CONFIRM_SECONDS);
   if (p <= 1e-3){ prompt = null; return null; }
@@ -3720,7 +3763,9 @@ face.addEventListener("pointerdown", ev => {
     /* a tap while it is still growing is swallowed rather than guessed at */
     if (confirmOpen(t)){
       if (inBox(CONFIRM_YES, x, y)){
-        if (prompt.kind === "shutdown") requestShutdown(t); else dismiss(prompt.id);
+        if (prompt.kind === "shutdown") requestShutdown(t);
+        else if (prompt.kind === "stillred") stillRedGreen(prompt);
+        else dismiss(prompt.id);
       }
       closeConfirm(t);
     }
@@ -4877,7 +4922,7 @@ const DEBUG_PAGES = {
     ["NETWORK", "net", [["real", "REAL", 0], ["offline", "OFFLINE", 0], ["refused", "REFUSED", 0]]],
     /* a feed not updating, which takes the weather line's place label (round 27) */
     ["STALE", "stale", [["real", "REAL", 0], ["cal", "CALENDAR", 0], ["calnone", "NEVER", 0], ["wx", "WEATHER", 0]]],
-    ["DISMISS PROMPT", null, [["prompt", "SHOW", 0]]]]],
+    ["PROMPTS", null, [["prompt", "DISMISS", 0], ["stillred", "STILL RED", 0]]]]],
   "-2": ["DEBUG · THE FEEDS", [
     ["FORECAST", "fc", [["live", "LIVE", 2], ["icons", "EVERY ICON", 2], ["wet", "WET WEEK", 2]]],
     ["WEATHER ALERT", "walert", [["none", "NONE", 0], ["frost", "FROST", 0], ["storm", "STORM", 0]]],
@@ -4947,6 +4992,7 @@ function pressDebug(page, x, y){
   const [, key, opts] = d.rows[ri], [v, , to] = opts[oi];
   if (v === "clear"){ Object.assign(dbg, REAL); applyDebug(); slideTo(0); return; }
   if (v === "prompt"){ promptPending = true; slideTo(0); return; }
+  if (v === "stillred"){ stillRedPending = true; slideTo(0); return; }
   if (v === "align"){ if (window.simAlign) window.simAlign(); return; }
   if (v === "wdtest"){ if (window.simWatchdogTest) window.simWatchdogTest(); slideTo(to); return; }
   dbg[key] = v; applyDebug();
@@ -5008,7 +5054,7 @@ const visible = () => st.q !== 0 || st.goal !== 0;
 
 /* ── the fakes drive the simulation, as Dashboard.apply_fake does ───── */
 const applied = Object.assign({}, REAL);
-let alertFaked = false, dayCard = null, netSeenOff = false, promptPending = false;
+let alertFaked = false, dayCard = null, netSeenOff = false, promptPending = false, stillRedPending = false;
 const FC = {live: "captured", icons: "icons", wet: "wet"};
 const PRINTER = {live: "printing", printing: "printing", heating: "heating", soon: "soon", change: "change",
                  attention: "attention", error: "error", finished: "finished"};
@@ -5132,6 +5178,11 @@ function tickFakes(t){
     promptPending = false;
     openConfirm();
     prompt.id = "debug-prompt";           /* so DISMISS cannot drop the real meeting behind it */
+  }
+  /* the still-red prompt with a made-up meeting: its GREEN reaches nothing */
+  if (stillRedPending && settled() && page() === 0 && !prompt){
+    stillRedPending = false;
+    openConfirm("stillred", {id: "debug-stillred", meeting: "Weekly Team Standup"});
   }
 }
 /* the face's alert is held by a faked alert, or a faked empty or one-meeting day;
