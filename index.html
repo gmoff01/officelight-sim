@@ -3518,7 +3518,7 @@ const SCENES = [
   ["Lunch",           11, 55, "lunch is ignored, so the card is already on the 1:00"],
   ["Unconfirmed",     12, 55, "TENTATIVE, dismissible, and it wraps"],
   ["Last of day",     16, 30, "nothing next, so it holds until it ends"],
-  ["Clear",           17, 30, "the empty-day layout"],
+  ["Clear",           17, 30, "the empty-day layout, naming tomorrow's first meeting"],
 ];
 const sceneBtns = [];
 SCENES.forEach(([label, h, m, title]) => {
@@ -3883,6 +3883,20 @@ function cardCountdown(sc, now){
     return "UNTIL " + (d.getHours() % 12 || 12) + ":" + String(d.getMinutes()).padStart(2, "0");
   }
   return fmtCountdown(left);
+}
+/* The empty day names the next meeting, as the panel's next_day_line
+   (2026-10-09): in "Schedule clear"'s own place and type, no countdown. The
+   simulated day repeats, so tomorrow's first is its own first, a day on;
+   DAY · EVENING on the debug pages shows it, a faked day otherwise does not. */
+function nextDayLine(){
+  const f = window.PGV && PGV.dayFake ? PGV.dayFake() : "real";
+  if (f === "evening") return "Tomorrow 9:00 AM \u00b7 Weekly Team Standup";
+  if (f !== "real") return null;
+  const first = makeDay().filter(i => !ignored(i)).sort((a, b) => a.s - b.s)[0];
+  if (!first) return null;
+  const d = new Date(first.s * 1000), h = d.getHours();
+  return "Tomorrow " + (h % 12 || 12) + ":" + String(d.getMinutes()).padStart(2, "0") + (h < 12 ? " AM" : " PM") +
+         " \u00b7 " + first.summary;
 }
 function fmtCountdown(mins){
   if (mins === null || mins >= 999 || mins < 0) return "T-——:——";
@@ -4929,7 +4943,7 @@ const DEBUG_PAGES = {
   "-1": ["DEBUG · THE FACE", [
     ["MEETING ALERT", "alert", [["off", "OFF", 0], ["yellow", "YELLOW", 0], ["red", "RED", 0]]],
     ["DAY", "day", [["real", "REAL", 0], ["empty", "EMPTY", 0], ["meeting", "MEETING", 0], ["busy", "BUSY", 1],
-                    ["overlap", "OVERLAP", 0]]],
+                    ["overlap", "OVERLAP", 0], ["evening", "EVENING", 0]]],
     ["NETWORK", "net", [["real", "REAL", 0], ["offline", "OFFLINE", 0], ["refused", "REFUSED", 0]]],
     /* a feed not updating, which takes the weather line's place label (round 27) */
     ["STALE", "stale", [["real", "REAL", 0], ["cal", "CALENDAR", 0], ["calnone", "NEVER", 0], ["wx", "WEATHER", 0]]],
@@ -5087,7 +5101,7 @@ function applyDebug(){
       if (v === "real") dayCard = null;
       else if (v === "busy"){ dayCard = null; busyDay = makeBusyDay(); }
       else if (v === "overlap"){ dayCard = null; busyDay = makeOverlapDay(); }
-      else if (v === "empty") dayCard = Object.assign({}, EMPTY_CARD);
+      else if (v === "empty" || v === "evening") dayCard = Object.assign({}, EMPTY_CARD);
       else dayCard = {summary: "Quarterly Platform and Infrastructure Planning Review", minutes: 25,
                       start: simNow() + 25 * 60, has: true, partstat: "NEEDS-ACTION", id: "debug_meeting", busy: false};
       card = busyDay ? busyCard(simNow()) : dayCard || cardFrom(simNow());
@@ -5399,7 +5413,7 @@ const live = {
   air(d){ Object.assign(AQI_CAPTURED, d); },
   alert(a){ LIVE_ALERT = a; },
 };
-window.PGV = {live, down, move, up, pageTap, faceTap, tick, visible, settled, state, faked, stripText, dateTap, feedState,
+window.PGV = {live, down, dayFake: () => dbg.day, move, up, pageTap, faceTap, tick, visible, settled, state, faked, stripText, dateTap, feedState,
               automationOff, alertSource, close: () => slideTo(0), slideTo, cardNow: c => busyDay ? busyCard(simNow()) : dayCard || c, faceOnly, AGENDA: P_AGENDA, WEATHER: P_WEATHER,
               locked: () => locked, closeCamera: () => closeCam, radioLost: () => dbg.radio === "lost", mix, ease, CLOCK_BOX: {x0: 270, x1: 530, y0: 66, y1: 166},
               inClock: (x, y) => inZone(ZONE_CLOCK, x, y)};
@@ -6067,7 +6081,7 @@ function frame(){
     nextEl.classList.add("empty");
     $("cd").textContent = "T-——:——";
     /* an empty day with the calendar down claims nothing (round 27) */
-    $("sum").textContent = calendarDown ? "Calendar not updating" : "Schedule clear";
+    $("sum").textContent = calendarDown ? "Calendar not updating" : (nextDayLine() || "Schedule clear");
   } else {
     nextEl.classList.remove("empty");
     $("cd").textContent = cardCountdown(sc, now);
