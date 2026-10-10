@@ -1128,7 +1128,7 @@ function cardFrom(now){
   const grace = GRACE_MINUTES * 60;
   let nxt = live.find(i => now - i.s < grace);
   if (!nxt) nxt = live.reduce((a, b) => (b.e < a.e ? b : a));
-  return {summary:nxt.summary, minutes:(nxt.s - now) / 60, start:nxt.s, has:true,
+  return {summary:nxt.summary, minutes:(nxt.s - now) / 60, start:nxt.s, end:nxt.e, has:true,
           partstat:nxt.partstat, id:nxt.id, busy:nxt.busy};
 }
 let card = cardFrom(simNow()), cardBuiltAt = 0;
@@ -3513,7 +3513,7 @@ const SCENES = [
   ["Quiet",            8,  0, "nothing within the ten-minute window"],
   ["Ten out",          8, 52, "the amber heads-up for an accepted meeting"],
   ["Two out",          8, 59, "crimson, and the door really turns red"],
-  ["In it",            9,  5, "a meeting under way keeps the card ten minutes"],
+  ["In it",            9,  5, "a meeting under way keeps the card ten minutes, saying when it ends"],
   ["Overlap",         10, 22, "a standup inside a longer block, called out"],
   ["Lunch",           11, 55, "lunch is ignored, so the card is already on the 1:00"],
   ["Unconfirmed",     12, 55, "TENTATIVE, dismissible, and it wraps"],
@@ -3872,6 +3872,17 @@ function paintLog(){
     return '<span class="' + l.dir + '"><i>' + hh + ":" + mm + ":" + ss + "</i> " +
       (l.dir === "out" ? "&rarr;" : "&larr;") + " <b>" + l.text + "</b></span>";
   }).join("");
+}
+/* the card's readout, as the panel's card_countdown (2026-10-09): T- to the
+   start, or once it is under way UNTIL 2:30 - for its first ten minutes on the
+   card - where it read T-——:—— */
+function cardCountdown(sc, now){
+  const left = sc.start === null ? null : (sc.start - now) / 60;
+  if (left !== null && left < 0 && sc.end !== undefined && sc.end !== null){
+    const d = new Date(sc.end * 1000);
+    return "UNTIL " + (d.getHours() % 12 || 12) + ":" + String(d.getMinutes()).padStart(2, "0");
+  }
+  return fmtCountdown(left);
 }
 function fmtCountdown(mins){
   if (mins === null || mins >= 999 || mins < 0) return "T-——:——";
@@ -6059,7 +6070,7 @@ function frame(){
     $("sum").textContent = calendarDown ? "Calendar not updating" : "Schedule clear";
   } else {
     nextEl.classList.remove("empty");
-    $("cd").textContent = fmtCountdown(sc.start === null ? null : (sc.start - now) / 60);
+    $("cd").textContent = cardCountdown(sc, now);
     const tent = UNCONFIRMED.includes(sc.partstat);
     $("sum").innerHTML = (tent ? '<span class="tent">TENTATIVE · </span>' : "") +
       sc.summary.replace(/&/g, "&amp;").replace(/</g, "&lt;");
