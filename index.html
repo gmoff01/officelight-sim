@@ -720,6 +720,21 @@
         polls drove the light into party mode by itself.
       </p>
       <p class="copy">
+        Every command is <b>checked</b>: the command and its complement, so OFF is
+        <code>00&nbsp;FF</code>. One evening the light went from green to off with nobody near
+        it &mdash; a radio glitch had read a packet back as zeros, and a lone <code>0</code> is
+        OFF. Now zeros fail the check, and so does any single wrong bit; the light refuses the
+        packet and counts it. The remote has its own pipe, so the light knows which sender a
+        packet came from, and each press carries the remote's cell, measured just after its
+        radio's burst, for the health page.
+      </p>
+      <p class="copy">
+        The light's replies are checked too. The same night the dashboard logged the light
+        restarting after a day and a half of uptime, but every one of its counters carried on:
+        one bit of the uptime had been read wrong. Each reply now ends in a <b>CRC&#8209;8</b> of the
+        rest, and the panel drops any reply that fails it, mode and all.
+      </p>
+      <p class="copy">
         Party mode is the <b>receiver's</b> rule, not the dashboard's. The firmware counts the
         presses; the panel finds out from the next poll, within a second, because nothing
         pushes.
@@ -735,7 +750,7 @@
     </div>
     <div class="scroll-x">
       <table>
-        <caption>The command byte, shared by all four files</caption>
+        <caption>The command byte, shared by all four files &mdash; sent with its complement</caption>
         <thead><tr><th>Value</th><th>Command</th><th>Light</th><th>Remote</th><th>Panel</th></tr></thead>
         <tbody>
           <tr><td><code>0</code></td><td>Off</td><td>yes &mdash; 5&times; &rarr; party</td><td>yes</td><td>yes</td></tr>
@@ -743,7 +758,7 @@
           <tr><td><code>2</code></td><td>Yellow</td><td>yes</td><td>yes</td><td>yes</td></tr>
           <tr><td><code>3</code></td><td>Red</td><td>yes</td><td>yes</td><td>yes &mdash; and automatic</td></tr>
           <tr><td><code>4</code></td><td>Party</td><td>yes</td><td><span class="no">n/a</span></td><td><span class="no">n/a</span></td></tr>
-          <tr><td><code>0xFF</code></td><td>Query</td><td>reports, changes nothing</td><td><span class="no">n/a</span></td><td>every second</td></tr>
+          <tr><td><code>0xFF</code></td><td>Query</td><td>reports, changes nothing</td><td><span class="no">n/a</span></td><td>every second, alone</td></tr>
         </tbody>
       </table>
     </div>
@@ -763,7 +778,7 @@
         </tr>
         <tr>
           <td>The remote</td><td>Pro Mini 3.3V/8MHz</td>
-          <td>Four buttons, deep sleep, pin&#8209;change wake, on a CR2032 with 100&#8239;&micro;F across its radio</td>
+          <td>Four buttons, deep sleep, pin&#8209;change wake, on a CR2450 with 100&#8239;&micro;F across its radio</td>
           <td><b>Built and working</b> over the air</td>
         </tr>
         <tr>
@@ -887,6 +902,7 @@ const sim = {
   stagedPower: {state: "ON_BATTERY", low: false, adc: BATTERY_STEPS[0][0]},
 };
 let lastAckPower = null;          /* the power bytes of the last ack received */
+let lastAckRemote = null;         /* and its layout-3 bytes: refused commands, the remote */
 function simMode(){
   if (sim.party) return CMD_PARTY;
   for (const k of [1, 2, 3]) if (sim.color === STATUS_COLORS[k]) return +k;
@@ -903,14 +919,42 @@ const lightListening = () => lightPowered && hwMs() >= lightListenAt;
    in the mode it had, as the sketch's kept mode does */
 let lightFrozenUntil = 0;
 window.simWatchdogTest = () => { lightFrozenUntil = hwMs() + 8000; };
-function simPacket(cmd, ms){            /* returns the ack the sender receives, or null */
+/* Checked commands (2026-10-11), as Receiver.ino's commandOf: a command is
+   itself and its complement, [cmd, ~cmd], from the panel's pipe (1), and
+   [cmd, ~cmd, its cell] from the remote's own (2). The panel's one-byte query
+   still answers. At 22:09 on 10-10 the real light went GREEN -> OFF with no
+   press: its radio glitches read back zeros, and a one-byte 0 is OFF. */
+const PIPE_PANEL = 1, PIPE_REMOTE = 2;
+function commandOf(pipe, d){
+  const panel = pipe === PIPE_PANEL, remote = pipe === PIPE_REMOTE;
+  if (panel && d.length === 1 && d[0] === CMD_QUERY) return CMD_QUERY;
+  const shaped = (panel && d.length === 2) || (remote && d.length === 3);
+  if (((panel || remote) && d.length === 1) || (shaped && (d[0] ^ d[1]) !== 0xFF)){
+    sim.failedChecks = (sim.failedChecks || 0) + 1;      /* refused, and counted apart from junk */
+    return null;
+  }
+  if (!shaped || !(remote ? d[0] <= CMD_RED : d[0] <= CMD_PARTY || d[0] === CMD_QUERY)){
+    /* not a packet anything sends: ignored and counted, the mode and the OFF
+       count left as they were (2026-10-06, as the sketch's badPackets) */
+    sim.badPackets = (sim.badPackets || 0) + 1;
+    return null;
+  }
+  if (remote){
+    sim.remotePresses = (sim.remotePresses || 0) + 1;
+    if (d[2]) sim.remoteCell = d[2];
+    sim.remoteHeardMs = hwMs();
+  }
+  return d[0];
+}
+const checked = cmd => [cmd, cmd ^ 0xFF];
+function simPacket(data, ms, pipe = PIPE_PANEL){   /* returns the ack the sender receives, or null */
   if (!lightListening() || hwMs() < lightFrozenUntil) return null;
   const ack = sim.stagedAck;
   lastAckPower = sim.stagedPower;
-  if (!(cmd >= 0 && cmd <= CMD_PARTY) && cmd !== CMD_QUERY){
-    /* not a command anything sends: ignored and counted, the mode and the OFF
-       count left as they were (2026-10-06, as the sketch's badPackets) */
-    sim.badPackets = (sim.badPackets || 0) + 1;
+  lastAckRemote = sim.stagedRemote;
+  const cmd = commandOf(pipe, data);
+  if (cmd === null){
+    /* refused: nothing changes */
   } else if (cmd === CMD_QUERY){
     /* recognised and deliberately inert */
   } else if (cmd === CMD_OFF){
@@ -928,8 +972,24 @@ function simPacket(cmd, ms){            /* returns the ack the sender receives, 
   }
   sim.stagedAck = simMode();            /* staged for the NEXT packet */
   sim.stagedPower = {state: sim.power, low: sim.lowBatt, adc: sim.adc};
+  /* layout 3's bytes 16-20: refused commands, the remote's presses, its cell
+     in 20 mV steps, and when it was last heard */
+  sim.stagedRemote = {failed: sim.failedChecks || 0, presses: sim.remotePresses || 0,
+                      cell: sim.remoteCell || 0, heardMs: sim.remoteHeardMs};
   return ack;
 }
+/* the debug pages' PHANTOM: a one-byte OFF with no check, as the glitch read */
+window.simPhantom = () => {
+  simPacket([CMD_OFF], hwMs());
+  logLine("out", "unchecked OFF &middot; PHANTOM");
+};
+/* and BAD REPLY: a bit of the next reply flipped, which fails its CRC-8 and
+   is dropped - nothing on the panel moves (2026-10-11) */
+let spoilNextReply = false;
+window.simBadReply = () => {
+  spoilNextReply = true;
+  logLine("out", "next reply spoiled &middot; BAD REPLY");
+};
 function simPower(usb, adc, ms){
   /* loop() looks at USB every pass: a plug going in is noticed at once, an
      unplug once it has lasted a quarter of a second */
@@ -1022,7 +1082,8 @@ function heard(answered){
 }
 function radioSend(cmd){
   /* the debug pages' RADIO · LOST: nothing is there to answer */
-  const ack = PGV.radioLost() ? null : simPacket(cmd, hwMs());
+  /* checked, as the panel sends a command to the light since 2026-10-11 */
+  const ack = PGV.radioLost() ? null : simPacket(checked(cmd), hwMs());
   heard(ack !== null);
   if (ack === null){ logLine("out", "cmd " + cmd + " &middot; unanswered"); return; }
   /* the state goes optimistic the instant a command is sent, because a
@@ -1033,10 +1094,21 @@ function radioSend(cmd){
   logLine("out", "cmd " + cmd + " &middot; " + MODE_NAME[cmd]);
 }
 function radioPoll(){
-  const ack = PGV.radioLost() ? null : simPacket(CMD_QUERY, hwMs());
+  const ack = PGV.radioLost() ? null : simPacket([CMD_QUERY], hwMs());
   heard(ack !== null);
   if (ack === null){ logLine("out", "0xFF query &middot; unanswered"); return; }
+  if (spoilNextReply){
+    spoilNextReply = false;
+    logLine("in", "reply dropped &middot; failed its check");
+    return;
+  }
   radio.power = lastAckPower;           /* a query's own ack: its power bytes are current */
+  const r = lastAckRemote;
+  if (r){
+    /* each refused command is a phantom the light would once have obeyed */
+    if (radio.remote && r.failed > radio.remote.failed) logLine("in", "light refused a command &middot; failed its check");
+    radio.remote = {failed: r.failed, heardMs: r.heardMs, cellMv: r.cell ? r.cell * 20 : null};
+  }
   radio.queue.push(ack);
   logLine("out", "0xFF query");
 }
@@ -3550,11 +3622,20 @@ speedBtns[0].setAttribute("aria-pressed", "true");
 [["OFF", CMD_OFF, ""], ["GRN", CMD_GREEN, ""], ["YEL", CMD_YELLOW, "warm"],
  ["RED", CMD_RED, "hot"]].forEach(([label, cmd, cls]) => {
   mkBtn($("remote"), label, () => {
-    /* a remote press reaches the receiver directly; the panel learns from
-       its next poll, which is why there is a visible lag */
-    simPacket(cmd, hwMs());
+    /* a remote press reaches the receiver directly, on its own pipe with its
+       cell; the panel learns from its next poll, which is why there is a
+       visible lag */
+    simPacket(checked(cmd).concat([REMOTE_CELLS[remoteCell][0]]), hwMs(), PIPE_REMOTE);
     logLine("in", "remote " + label);
   }, cls);
+});
+/* the remote's cell, as its presses report it, in 20 mV steps (2026-10-11):
+   a worn one shows REPLACE SOON on the health page */
+const REMOTE_CELLS = [[148, "Remote cell 2.96 V"], [137, "Remote cell 2.74 V"]];
+let remoteCell = 0;
+mkBtn($("remote"), REMOTE_CELLS[0][1], e => {
+  remoteCell = (remoteCell + 1) % REMOTE_CELLS.length;
+  e.currentTarget.textContent = REMOTE_CELLS[remoteCell][1];
 });
 
 mkBtn($("power"), "Toggle USB", e => {
@@ -4419,6 +4500,18 @@ const TONE = {ok: C.jade, warn: C.amber, bad: C.crimson, off: C.steel, info: C.c
 const span = s => s < 60 ? Math.round(s) + " SEC" : s < 3600 ? Math.round(s / 60) + " MIN" :
   Math.floor(s / 3600) + " HR " + Math.round(s % 3600 / 60) + " MIN";
 const ago = s => s === null || s === undefined ? "–" : span(s) + " AGO";
+/* the remote's cell, from the light's report since layout 3 (health.remote_row, 2026-10-11):
+   OK, or REPLACE SOON in the label, and the time to the hour so the row fits its column */
+const REMOTE_CELL_REPLACE_MV = 2800;
+const briefAgo = s => s < 60 ? Math.round(s) + " SEC AGO" : s < 3600 ? Math.floor(s / 60) + " MIN AGO" :
+  s < 172800 ? Math.floor(s / 3600) + " HR AGO" : Math.floor(s / 86400) + " DAYS AGO";
+function remoteRow(H){
+  if (H.remoteCell == null) return ["REMOTE", H.remote == null ? "NOT SINCE START" : ago(H.remote), "off", false];
+  const low = H.remoteCell < REMOTE_CELL_REPLACE_MV;
+  return [low ? "REMOTE · REPLACE SOON" : "REMOTE",
+          (H.remoteCell / 1000).toFixed(2) + " V" + (H.remote == null ? "" : " · " + briefAgo(H.remote)),
+          low ? "warn" : "ok", true];
+}
 /* Each row: [label, value, tone, counts toward the dot]. The light not
    answering counts only in business hours, when it should be on - out of
    hours it is switched off on purpose. The printer off never counts. */
@@ -4431,7 +4524,7 @@ function rows(H, inHours){
       [H.light.answering || inHours ? "LIGHT" : "LIGHT · OFF HOURS",
        H.light.answering ? H.light.mode + " · LINK " + (dbg.radio === "weak" ? 62 : 99) + "%" : "NOT ANSWERING",
        H.light.answering && dbg.radio === "weak" ? "warn" : lightTone, inHours],
-      ["REMOTE", H.remote === null ? "NOT SINCE START" : ago(H.remote), "off", false],
+      remoteRow(H),
       ["CALENDAR", ago(H.calendar.age), H.calendar.ok ? "ok" : "warn", true],
       ["NETWORK", H.online ? "ONLINE" : "OFFLINE", H.online ? "ok" : "bad", true],
       ["WEATHER", ago(H.weather.age) + (H.weather.ok ? "" : " · STALE"), H.weather.ok ? "ok" : "warn", true],
@@ -4953,17 +5046,20 @@ const DEBUG_PAGES = {
     ["WEATHER ALERT", "walert", [["none", "NONE", 0], ["frost", "FROST", 0], ["storm", "STORM", 0]]],
     ["AIR", "air", [["real", "REAL", 2], ["smoky", "SMOKY", 2]]],
     ["PRINTER", "printer", [["live", "LIVE", 0], ["printing", "PRINTING", 0], ["heating", "HEATING", 0], ["soon", "COLOR SOON", 0]]],
-    [null, "printer", [["change", "CHANGE", 0], ["attention", "ATTENTION", 0], ["error", "ERROR", 0], ["finished", "DONE", 0]]]]],
+    [null, "printer", [["change", "CHANGE", 0], ["attention", "ATTENTION", 0], ["error", "ERROR", 0], ["finished", "DONE", 0]]],
+    [null, "printer", [["paused", "OBICO PAUSE", 0]]]]],
   "-3": ["DEBUG · HEALTH", [
     ["HEALTH", "health", [["real", "REAL", 3], ["problems", "PROBLEMS", 3]]],
     ["BATTERY", "batt", [["real", "REAL", 3], ["charging", "CHARGING", 3], ["full", "FULL", 3]]],
     [null, "batt", [["60", "60%", 0], ["14", "14%", 0], ["8", "8%", 0]]],
     ["RADIO", "radio", [["real", "REAL", 3], ["weak", "WEAK", 3], ["lost", "LOST", 3]]],
     /* the light freezes on purpose; its watchdog restarts it in its mode (2026-10-08) */
-    ["CHECKS", null, [["wdtest", "WATCHDOG", 3], ["align", "ALIGN", -3]]]]],
+    ["CHECKS", null, [["wdtest", "WATCHDOG", 3], ["align", "ALIGN", -3], ["phantom", "PHANTOM", 0],
+                      ["badreply", "BAD REPLY", 0]]]]],
   "-4": ["DEBUG · THE BACKGROUND", null],
 };
 const ROW_Y0 = 290, ROW_PITCH = 66, PILL_H = 34, PILL_GAP = 8, PILL_FONT = "16px " + MONO;
+const DBG_VIEW = [272, 600], DBG_BAR_X = 630, DBG_SCROLL = {};   /* the rows' window, and each page's scroll */
 let debugRects = {};              /* page -> [[x, y, w, h, row, option]] as last drawn */
 function bgRows(){
   /* ROTATION and the simulation's own styles, three to a row */
@@ -4999,13 +5095,32 @@ function drawDebug(g, page){
   T(g, "CLEAR ALL", cx + cw / 2, cy + 23, PILL_FONT, rgba(hexRGB(C.amber), any ? 1 : .4), "center", 1.5);
   rects.push([cx, cy, cw, PILL_H, -1, 0]);
   g.fillStyle = rgba(hexRGB(C.amber), .5); g.fillRect(270, 266, 260, 1.5);
+  const sc = DBG_SCROLL[page] || 0, rowRects = [], [vt, vb] = DBG_VIEW;
+  g.save(); g.beginPath(); g.rect(0, vt, 800, vb - vt); g.clip(); g.translate(0, -sc);
   let y = ROW_Y0;
   rows.forEach(([label, key, opts], ri) => {
     if (label){ T(g, label, 400, y, "14px " + MONO, C.dim, "center", 2.5); y += 8; }
-    pills(g, opts, y, key, page, rects, ri);
+    pills(g, opts, y, key, page, rowRects, ri);
     y += PILL_H + (rows[ri + 1] && rows[ri + 1][0] ? 24 : 10);
   });
-  debugRects[page] = {rects, rows};
+  g.restore();
+  const most = Math.max(0, Math.max(...rowRects.map(r => r[1] + r[3])) - vb);
+  /* the targets as shown: scrolled, and cut to the window */
+  rowRects.forEach(([rx, ry, w, h, ri, oi]) => {
+    const top = Math.max(vt, ry - sc), bot = Math.min(vb, ry + h - sc);
+    if (bot > top) rects.push([rx, top, w, bot - top, ri, oi]);
+  });
+  if (most > 0){
+    const view = vb - vt, th = Math.max(24, Math.round(view * view / (view + most)));
+    g.fillStyle = C.line2; g.fillRect(DBG_BAR_X, vt, 2, view);
+    g.fillStyle = C.cyan; g.fillRect(DBG_BAR_X, vt + (view - th) * sc / most, 2, th);
+    [[true, sc > 0, vt - 8], [false, sc < most, vb + 8]].forEach(([up, lit, cy]) => {
+      g.strokeStyle = lit ? C.cyan : rgba(hexRGB(C.steel), .5); g.lineWidth = 2; g.beginPath();
+      g.moveTo(DBG_BAR_X - 4, cy + (up ? 3 : -3)); g.lineTo(DBG_BAR_X + 1, cy + (up ? -3 : 3));
+      g.lineTo(DBG_BAR_X + 6, cy + (up ? 3 : -3)); g.stroke();
+    });
+  }
+  debugRects[page] = {rects, rows, most};
 }
 function pressDebug(page, x, y){
   const d = debugRects[page];
@@ -5020,6 +5135,8 @@ function pressDebug(page, x, y){
   if (v === "stillred"){ stillRedPending = true; slideTo(0); return; }
   if (v === "align"){ if (window.simAlign) window.simAlign(); return; }
   if (v === "wdtest"){ if (window.simWatchdogTest) window.simWatchdogTest(); slideTo(to); return; }
+  if (v === "phantom"){ if (window.simPhantom) window.simPhantom(); slideTo(0); return; }
+  if (v === "badreply"){ if (window.simBadReply) window.simBadReply(); slideTo(0); return; }
   dbg[key] = v; applyDebug();
   if (key === "air") setTab(2); else if (key === "fc") setTab(0);
   slideTo(to);
@@ -5082,7 +5199,7 @@ const applied = Object.assign({}, REAL);
 let alertFaked = false, dayCard = null, netSeenOff = false, promptPending = false, stillRedPending = false;
 const FC = {live: "captured", icons: "icons", wet: "wet"};
 const PRINTER = {live: "printing", printing: "printing", heating: "heating", soon: "soon", change: "change",
-                 attention: "attention", error: "error", finished: "finished"};
+                 attention: "attention", error: "error", finished: "finished", paused: "paused"};
 function applyDebug(){
   for (const k of Object.keys(REAL)){
     if (dbg[k] === applied[k]) continue;
@@ -5235,11 +5352,16 @@ function feedState(){
   return {cal, wx};
 }
 function systemNow(){
-  const base = HEALTH[dbg.health === "problems" ? "problems" : "ok"];
+  const problems = dbg.health === "problems";
+  const base = HEALTH[problems ? "problems" : "ok"];
   const pst = window.PRV ? PRV.state().split(/[ ,]/)[0].toUpperCase() : null;
+  /* the remote as the light reports it (layout 3, 2026-10-11) - or, with
+     PROBLEMS, a cell to replace, last pressed three hours ago */
+  const rm = radio.remote, heard = rm && rm.heardMs != null ? (hwMs() - rm.heardMs) / 1000 : null;
   return Object.assign({}, base, {
     light: {answering: !radio.lost && lightListening(), mode: MODE_NAME[radio.lastConfirmed]},
-    remote: null, online: net.online,
+    remote: problems ? 3 * 3600 + 600 : heard, remoteCell: problems ? 2700 : rm ? rm.cellMv : null,
+    online: net.online,
     calendar: (f => ({age: f.cal === "never" ? null : f.cal || 60, ok: f.cal === null}))(feedState()),
     weather: (f => ({age: f.wx || 300, ok: f.wx === null}))(feedState()),
     printer: {state: pst, age: 9}});
@@ -5264,7 +5386,10 @@ function down(x, y, t, ev){
   }
   st.drag = {x0: x, y0: y, t0: t, q0: st.q, moved: false, band, p0: band ? band.pos : 0, last: [x, t], v: 0,
              /* on the agenda, a drag up or down scrolls the day (2026-10-06) */
-             ag: settled() && st.q === P_AGENDA && y > AG_TOP - 10 && y < AG_BOT + 10, s0: AG.scroll || 0};
+             ag: settled() && st.q === P_AGENDA && y > AG_TOP - 10 && y < AG_BOT + 10, s0: AG.scroll || 0,
+             /* and on a debug page whose rows run long, its rows (2026-10-11) */
+             dg: settled() && st.q < 0 && ((debugRects[st.q] || {}).most || 0) > 0 &&
+                 y > DBG_VIEW[0] - 10 && y < DBG_VIEW[1] + 10, ds0: DBG_SCROLL[st.q] || 0};
   if (!band) st.goal = st.q;
   try { face.setPointerCapture(ev.pointerId); } catch (e) {}
   return true;
@@ -5276,7 +5401,9 @@ function move(x, y, t){
   if (Math.hypot(x - D.x0, y - D.y0) > 8) D.moved = true;
   if (!D.moved) return;
   /* which way it went first decides it: up or down scrolls the agenda */
-  if (D.ag && D.axis === undefined) D.axis = Math.abs(y - D.y0) > Math.abs(x - D.x0) ? "v" : "h";
+  if ((D.ag || D.dg) && D.axis === undefined) D.axis = Math.abs(y - D.y0) > Math.abs(x - D.x0) ? "v" : "h";
+  if (D.axis === "v" && D.dg){ const pg = Math.round(D.q0);
+    DBG_SCROLL[pg] = clamp(D.ds0 - (y - D.y0), 0, debugRects[pg].most); return; }
   if (D.axis === "v"){ AG.scroll = clamp(D.s0 - (y - D.y0), 0, agMaxScroll()); return; }
   const [lx, lt] = D.last, inst = (x - lx) / Math.max(.004, t - lt);
   D.v = D.v * .6 + inst * .4; D.last = [x, t];
@@ -5356,6 +5483,7 @@ function tick(dt, t, o){
   if ((st.q <= P_WEATHER - 1 || st.q >= P_WEATHER + 1) && wx.scroll) Object.values(wx.scroll).forEach(S => { S.pos = 0; S.vel = 0; });
   agClock();
   if (Math.abs(st.q - P_AGENDA) >= 1) AG.scroll = 0;      /* off screen, the day rewinds to now */
+  for (const pg in DBG_SCROLL) if (Math.abs(st.q - pg) >= 1) DBG_SCROLL[pg] = 0;   /* and a debug page's rows */
   if (wx.scroll) Object.values(wx.scroll).forEach(S => W19.scrollStep(S, dt, t));
   const q = st.q, q1 = clamp01(Math.abs(q)), qs = clamp(q, -1, 1);
   if (!o.camera){
@@ -5471,6 +5599,7 @@ const SCEN = {
   change:    {state: "ATTENTION", progress: 63, left: 2940, printing_for: 5605, change_in: null, nozzle: [225.7, 225], bed: [59.9, 60], was_change: true},
   attention: {state: "ATTENTION", progress: 44, left: 4560, printing_for: 3994, change_in: 1560, nozzle: [225, 225], bed: [60, 60]},
   error:     {state: "ERROR", progress: 51, left: 3800, printing_for: 4400, change_in: null, nozzle: [31, 0], bed: [44, 0]},
+  paused:    {state: "PAUSED", alert: true, progress: 41, left: 4790, printing_for: 3330, change_in: null, nozzle: [225, 225], bed: [60, 60]},
   finished:  {state: "FINISHED"},
   idle:      {state: "IDLE"},
 };
@@ -5486,7 +5615,7 @@ function printer(now){
   if (!ACTIVE.includes(s.state)) return {printing: false, alert: false, state: s.state};
   const ticking = s.state === "PRINTING";
   const left = Math.max(0, s.left - (ticking ? el : 0));
-  return {printing: true, alert: ALERTING.includes(s.state), state: s.state,
+  return {printing: true, alert: ALERTING.includes(s.state) || !!s.alert, state: s.state,
           progress: s.progress + (ticking ? el / (s.left + s.printing_for) * 100 : 0),
           left, printing_for: s.printing_for + (ticking ? el : 0),
           change_in: s.change_in === null ? null : Math.max(0, s.change_in - (ticking ? el : 0)),
@@ -5509,7 +5638,7 @@ const SOON = 300;       /* a color change this close turns its line amber */
 function header(pv){
   if (pv.state === "ERROR") return [["ERROR", rgba(CRIMSON, 1)], ["  ·  SEE THE PRINTER", C.ice]];
   if (pv.reason === "change") return [["COLOR CHANGE", rgba(CRIMSON, 1)], ["  ·  LOAD THE NEXT FILAMENT", C.ice]];
-  if (pv.state === "ATTENTION") return [["ATTENTION", rgba(CRIMSON, 1)], ["  ·  SEE THE PRINTER", C.ice]];
+  if (pv.alert) return [[pv.state, rgba(CRIMSON, 1)], ["  ·  SEE THE PRINTER", C.ice]];
   if (pv.heating) return [["HEATING", C.amber], ["  ·  NOZZLE " + Math.round(pv.nozzle[0]) + "° OF " + pv.nozzle[1] + "°", C.ice]];
   return [["PRINTING", C.cyan], ["  ·  " + Math.round(pv.progress) + "%  ·  " + fmtDur(pv.left) + " LEFT", C.ice]];
 }
@@ -5708,7 +5837,8 @@ function tick(dt, t, alerting, blocked){
 }
 const SCENES = Object.keys(SCEN);
 const LABEL = {printing: "Printing", heating: "Heating", soon: "Color soon", change: "Color change",
-               attention: "Attention", error: "Error", finished: "Finished", idle: "Idle"};
+               attention: "Attention", error: "Error", finished: "Finished", idle: "Idle",
+               paused: "Obico pause"};
 function scenario(name){ pr.scen = name; pr.t0 = performance.now() / 1000; pr.acked = false; }
 function state(){
   const pv = printer(performance.now() / 1000);
