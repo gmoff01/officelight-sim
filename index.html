@@ -5814,9 +5814,8 @@ const inZ = (z, x, y) => x >= z[0] && x <= z[0] + z[2] && y >= z[1] && y <= z[1]
 const mk3img = new Image(); mk3img.src = MK3_FRAME;
 const MK3_FILE = {model: "GAUGE HOLDER DRAFT10", material: "PETG", layer: "0.2"};
 const RING2_R = 29, RING2_W = 2.5, GLYPH_TWIN = 22;
-/* the twin sits lower than one printer's button, clear of the clock's last digit, with the
-   percentages a line each, a size up: printer_view.TWIN_DY, TWIN_LABEL (2026-10-19) */
-const TWIN_DY = 18, TWIN_LABEL = 18;
+/* the twin's percentages, a line each, a size up: printer_view.TWIN_LABEL (2026-10-19) */
+const TWIN_LABEL = 18;
 const WIN2 = {x: 178, y: 262, w: 444, h: 333};
 const PANES = {c1: [116, 304, 280, 210], mk3: [404, 304, 280, 210]};
 const TAB_Y = 206, TABS = [["c1", 270], ["mk3", 400], ["both", 530]], TAB_W = 128, TAB_H = 44;
@@ -5842,9 +5841,6 @@ function mk3(now){
 function statuses(now){ return {c1: printer(now), mk3: mk3(now)}; }
 const activeOf = st => ["c1", "mk3"].filter(k => st[k].printing);
 const doneOf = st => ["c1", "mk3"].filter(k => !st[k].printing && (k === "c1" ? doneNow() : mkDone()));
-/* the button's zone, lower for the twin: printer_view.in_button */
-const btnZone = st => { const z = BTN.zone, twin = ["c1", "mk3"].every(k => st[k].printing || doneOf(st).includes(k));
-                        return [z[0], z[1] + (twin ? TWIN_DY : 0), z[2], z[3]]; };
 /* Dashboard.view_to_open */
 function viewToOpen(st){
   const act = activeOf(st);
@@ -5875,7 +5871,7 @@ function glowJade(g, x, y, r, b){
 }
 /* both printers on the one button: printer_view.twin_layers */
 function drawTwin(g, e, a, now){
-  const x = BTN.x, y = BTN.y + TWIN_DY;
+  const x = BTN.x, y = BTN.y;
   g.globalAlpha = a;
   const act = ["c1", "mk3"].filter(k => e[k][0] === "active");
   if (act.some(k => e[k][1].alert)) glowAt(g, x, y, 92, breathe(now));
@@ -5886,8 +5882,8 @@ function drawTwin(g, e, a, now){
   const parts = [];
   [["c1", 38, 3], ["mk3", RING2_R, RING2_W]].forEach(([k, r, w]) => {
     const [kind, pv] = e[k];
-    if (kind === "done"){ ringArc(g, r, w, 100, rgba(JADE, 1), TWIN_DY); parts.push([TAG[k] + " DONE", rgba(JADE, 1)]); return; }
-    ringArc(g, r, w, pv.progress, pv.alert ? rgba(CRIMSON, 1) : pv.heating ? C.amber : C.cyan, TWIN_DY);
+    if (kind === "done"){ ringArc(g, r, w, 100, rgba(JADE, 1)); parts.push([TAG[k] + " DONE", rgba(JADE, 1)]); return; }
+    ringArc(g, r, w, pv.progress, pv.alert ? rgba(CRIMSON, 1) : pv.heating ? C.amber : C.cyan);
     parts.push([TAG[k] + " " + Math.round(pv.progress) + "%", pv.alert ? rgba(CRIMSON, 1) : C.dim]);
   });
   glyph(g, x, y, GLYPH_TWIN, C.ice);
@@ -6045,9 +6041,9 @@ window.PRV = {open, close, visible, isOpen, tick, scenario, scenario2, state, st
               alerting: () => { const st = statuses(performance.now() / 1000); return st.c1.alert || st.mk3.alert; },
               /* DONE first: beside a running print, the first tap clears it (2026-10-19) */
               canOpen: (x, y) => { const st = statuses(performance.now() / 1000);
-                                   return activeOf(st).length > 0 && !doneOf(st).length && ps.iconA > .5 && inZ(btnZone(st), x, y); },
+                                   return activeOf(st).length > 0 && !doneOf(st).length && ps.iconA > .5 && inZ(BTN.zone, x, y); },
               canAck: (x, y) => { const st = statuses(performance.now() / 1000);
-                                  return doneOf(st).length > 0 && ps.iconA > .5 && inZ(btnZone(st), x, y); },
+                                  return doneOf(st).length > 0 && ps.iconA > .5 && inZ(BTN.zone, x, y); },
               ack: () => { const d = doneOf(statuses(performance.now() / 1000));
                            if (d.includes("c1")) pr.acked = true; if (d.includes("mk3")) mk.acked = true; },
               done: () => doneNow() || mkDone(),
