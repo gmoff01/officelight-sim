@@ -4622,7 +4622,7 @@ W19.LAYOUTS.B.pick = (y, st) => y > 272 ? KEY[wx.tab] : null;
 const sc = {name: "today", sun: "markers"};
 /* every fake, at its real value */
 const REAL = {alert: "off", day: "real", net: "real", stale: "real", health: "real", prompt: "off",
-              fc: "live", walert: "none", air: "real", printer: "live", printer2: "live", batt: "real", radio: "real", bg: "rotation", bgspeed: "real"};
+              fc: "live", walert: "none", air: "real", printer: "live", printer2: "live", batt: "real", radio: "real", bg: "rotation", bgspeed: "real", pointer: "off"};
 const dbg = Object.assign({}, REAL);
 const AIR = () => dbg.air === "smoky" ? AQI_SMOKY : AQI_CAPTURED;
 let LIVE_ALERT = null;
@@ -5073,6 +5073,8 @@ function bgRows(){
   for (let i = 0; i < opts.length; i += 3) rows.push([i ? null : "BACKGROUND", "bg", opts.slice(i, i + 3)]);
   /* the background's clock run fast, as debug_pages' SPEED (2026-10-09) */
   rows.push(["SPEED", "bgspeed", [["real", "REAL", 0], ["4", "X4", 0], ["12", "X12", 0]]]);
+  /* the desktop's mouse pointer looping round the face, as debug_pages' POINTER (2026-10-22) */
+  rows.push(["POINTER", "pointer", [["off", "OFF", 0], ["demo", "DEMO", 0]]]);
   return rows;
 }
 function pills(g, opts, cy, key, page, rects, ri){
@@ -5233,6 +5235,7 @@ function applyDebug(){
     } else if (k === "fc"){ wx.data = FC[v]; resetWeather(); }
     else if (k === "printer" && window.PRV) PRV.scenario(PRINTER[v]);
     else if (k === "printer2" && window.PRV) PRV.scenario2(v);
+    else if (k === "pointer" && window.simPointer) simPointer.demo(v === "demo");
     else if (k === "bg" && v !== "rotation") requestRotate(v);
     else if (k === "bgspeed" && window.setBgSpeed) setBgSpeed(v === "real" ? 1 : +v);
   }
@@ -6353,6 +6356,56 @@ document.querySelectorAll("[data-spiro-mode]").forEach(b => b.addEventListener("
 
 })();
 /* ── end of the spliced spirograph ── */
+
+/* ── the desktop's mouse on the panel: spliced by tools/splice_views.py ── */
+(() => {
+"use strict";
+const RING_R = 15, RING_W = 2.5, DOT_R = 3, IDLE = 3000;       /* pointer.py's, in panel px */
+const face = document.getElementById("face");
+const el = document.createElement("div"), dot = document.createElement("div");
+el.setAttribute("aria-hidden", "true");
+el.style.cssText = "position:absolute; left:0; top:0; pointer-events:none; z-index:60; opacity:0; " +
+                   "transition:opacity .4s; border-radius:50%; box-sizing:border-box";
+el.appendChild(dot);
+face.appendChild(el);
+face.style.cursor = "none";
+let idle = null, demo = false, pressed = false;
+function size(){
+  const k = face.clientWidth / 800, d = 2 * RING_R * k, dd = 2 * DOT_R * k, h = 1.2 * k;
+  el.style.width = el.style.height = d + "px";
+  el.style.border = (RING_W * k) + "px solid #7fe3ff";
+  /* the dark halo that keeps it legible over bright backgrounds and the camera */
+  el.style.boxShadow = `0 0 0 ${h}px rgba(5,8,14,.55), inset 0 0 0 ${h}px rgba(5,8,14,.55)`;
+  dot.style.cssText = `position:absolute; left:50%; top:50%; width:${dd}px; height:${dd}px; ` +
+                      `margin:${-dd / 2}px 0 0 ${-dd / 2}px; border-radius:50%; background:#d6f2ff`;
+  return k;
+}
+function at(x, y){
+  const k = size(), d = 2 * RING_R * k;
+  el.style.transform = `translate(${x * k - d / 2}px, ${y * k - d / 2}px)`;
+}
+function fadeLater(){ clearTimeout(idle); if (!pressed && !demo) idle = setTimeout(() => { el.style.opacity = 0; }, IDLE); }
+face.addEventListener("pointermove", e => {
+  if (demo || e.pointerType === "touch") return;
+  const r = face.getBoundingClientRect();
+  at((e.clientX - r.left) * 800 / r.width, (e.clientY - r.top) * 800 / r.height);
+  el.style.opacity = 1;
+  fadeLater();
+});
+face.addEventListener("pointerdown", e => { if (e.pointerType !== "touch"){ pressed = true; clearTimeout(idle); } });
+window.addEventListener("pointerup", () => { if (pressed){ pressed = false; fadeLater(); } });
+face.addEventListener("pointerleave", () => { if (!demo) el.style.opacity = 0; });
+/* POINTER · DEMO: pointer.demo_at's loop */
+function loop(t){
+  if (!demo) return;
+  const a = t / 1000 * 0.9;
+  at(400 + 230 * Math.cos(a), 400 + 150 * Math.sin(2 * a));
+  requestAnimationFrame(loop);
+}
+window.simPointer = {demo(on){ demo = on; el.style.opacity = on ? 1 : 0; if (on) loop(performance.now()); }};
+size();
+})();
+/* ── end of the spliced mouse pointer ── */
 
 /* ════════════════════════════════════════════════════════════════════
    the loop
