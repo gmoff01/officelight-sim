@@ -5043,7 +5043,7 @@ const DEBUG_PAGES = {
     ["NETWORK", "net", [["real", "REAL", 0], ["offline", "OFFLINE", 0], ["refused", "REFUSED", 0]]],
     /* a feed not updating, which takes the weather line's place label (round 27) */
     ["STALE", "stale", [["real", "REAL", 0], ["cal", "CALENDAR", 0], ["calnone", "NEVER", 0], ["wx", "WEATHER", 0]]],
-    ["PROMPTS", null, [["prompt", "DISMISS", 0], ["stillred", "STILL RED", 0]]]]],
+    ["PROMPTS", null, [["prompt", "DISMISS", 0], ["stillred", "STILL RED", 0], ["call", "CALL", -1]]]]],
   "-2": ["DEBUG · THE FEEDS", [
     ["FORECAST", "fc", [["live", "LIVE", 2], ["icons", "EVERY ICON", 2], ["wet", "WET WEEK", 2]]],
     ["WEATHER ALERT", "walert", [["none", "NONE", 0], ["frost", "FROST", 0], ["storm", "STORM", 0]]],
@@ -5140,6 +5140,7 @@ function pressDebug(page, x, y){
   if (v === "clear"){ Object.assign(dbg, REAL); applyDebug(); slideTo(0); return; }
   if (v === "prompt"){ promptPending = true; slideTo(0); return; }
   if (v === "stillred"){ stillRedPending = true; slideTo(0); return; }
+  if (v === "call") return;   /* the panel sends a test call to the desktop; there is none here */
   if (v === "align"){ if (window.simAlign) window.simAlign(); return; }
   if (v === "wdtest"){ if (window.simWatchdogTest) window.simWatchdogTest(); slideTo(to); return; }
   if (v === "phantom"){ if (window.simPhantom) window.simPhantom(); slideTo(0); return; }
